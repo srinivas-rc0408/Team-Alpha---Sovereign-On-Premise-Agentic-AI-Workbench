@@ -1,5 +1,7 @@
 """Agent tools — local vision (moondream), RAG search, sandboxed calculator."""
+import ast
 import math
+import operator
 import os
 import subprocess
 import tempfile
@@ -42,6 +44,39 @@ def rag_search(query: str, k: int = None) -> str:
 # math-only namespace: no builtins, no imports reachable from an expression.
 _ALLOWED = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
 _ALLOWED.update({"abs": abs, "round": round, "min": min, "max": max, "sum": sum, "pow": pow})
+
+_BINOPS = {
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+    ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod, ast.Pow: operator.pow,
+}
+_UNARYOPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+_CMPOPS = {
+    ast.Lt: operator.lt, ast.LtE: operator.le, ast.Gt: operator.gt,
+    ast.GtE: operator.ge, ast.Eq: operator.eq, ast.NotEq: operator.ne,
+}
+
+
+def _safe_eval(node):
+    """AST-walking evaluator: only arithmetic + whitelisted math calls reach
+    Python's eval machinery, so there's no Attribute/Subscript node type an
+    expression could use to pivot to __class__/__subclasses__ and escape the
+    restricted namespace — the flaw plain eval(..., {'__builtins__': {}}) has."""
+    if isinstance(node, ast.Expression):
+        return _safe_eval(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
+        return _BINOPS[type(node.op)](_safe_eval(node.left), _safe_eval(node.right))
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARYOPS:
+        return _UNARYOPS[type(node.op)](_safe_eval(node.operand))
+    if isinstance(node, ast.Compare) and len(node.ops) == 1 and type(node.ops[0]) in _CMPOPS:
+        return _CMPOPS[type(node.ops[0])](_safe_eval(node.left), _safe_eval(node.comparators[0]))
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _ALLOWED:
+        return _ALLOWED[node.func.id](*(_safe_eval(a) for a in node.args))
+    if isinstance(node, ast.Name) and node.id in _ALLOWED:
+        return _ALLOWED[node.id]
+    raise ValueError(f"disallowed expression: {ast.dump(node)}")
 
 _DOCKER_IMAGE = os.getenv("SANDBOX_IMAGE", "python:3.12-slim")
 _DOCKER_TIMEOUT = int(os.getenv("SANDBOX_TIMEOUT", "10"))
@@ -92,14 +127,14 @@ def calculate(expression: str) -> str:
     except Exception:
         pass
     try:
-        # ponytail: sandboxed eval (empty builtins + math namespace) as the
-        # fallback path when Docker is unavailable.
-        return str(eval(expression, {"__builtins__": {}}, _ALLOWED))
+        return str(_safe_eval(ast.parse(expression, mode="eval")))
     except Exception as e:
         return f"Calculation error: {e}"
 
 
-if __name__ == "__main__":  # ponytail: calculator self-check — result + sandbox escape
+if __name__ == "__main__":  # ponytail: calculator self-check — result + sandbox escapes
     assert calculate("2**10 + sqrt(16)") == "1028.0"
+    assert calculate("18.4 > 15") == "True"
     assert "error" in calculate("__import__('os').system('echo hi')").lower()
-    print("tools ok — math evaluates, sandbox blocks builtins")
+    assert "error" in calculate("().__class__.__bases__[0].__subclasses__()").lower()
+    print("tools ok — math evaluates, sandbox blocks builtins and attribute-access escapes")
