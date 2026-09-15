@@ -1,6 +1,7 @@
 # AEGIS — Air-Gapped Engineering Intelligence System
 
-SIH26117 · Team Alpha · sovereign, on-premise agentic AI for confidential refinery work.
+SIH26117 · Team Alpha · Sovereign On-Premise Agentic AI Workbench using
+Open-Weight Multimodal LLMs for Confidential Industrial Work.
 
 A local-only agent that answers operator questions ("is this pressure reading a
 violation?") by planning a multi-step job, retrieving grounded SOP context,
