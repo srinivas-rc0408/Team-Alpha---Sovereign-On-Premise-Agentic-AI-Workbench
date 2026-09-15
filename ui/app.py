@@ -44,9 +44,14 @@ if st.button("Run", type="primary") and query.strip():
         image_path = tmp.name
         st.image(img, width=320)
     with st.spinner("Reasoning locally (Plan → Vision → RAG → Calc → Reflect → Answer)…"):
-        result = agent.run(query, image_path)
-    st.session_state["result"] = result
-    st.session_state["signed_off"] = False
+        try:
+            result = agent.run(query, image_path)
+        except RuntimeError as e:
+            st.error(str(e))
+            result = None
+    if result:
+        st.session_state["result"] = result
+        st.session_state["signed_off"] = False
 
 result = st.session_state.get("result")
 if result:

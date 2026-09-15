@@ -9,6 +9,7 @@ import json
 import os
 from typing import Optional, TypedDict
 
+import ollama
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
 
@@ -204,7 +205,18 @@ def build_agent():
 _AGENT = {"g": None}
 
 
+def _check_ollama():
+    host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    try:
+        ollama.Client(host=host).list()
+    except Exception as e:
+        raise RuntimeError(
+            f"Cannot reach Ollama at {host}. Is it running? Start it with: ollama serve"
+        ) from e
+
+
 def run(query: str, image_path: str = None) -> dict:
+    _check_ollama()
     if _AGENT["g"] is None:
         _AGENT["g"] = build_agent()
     audit.log("query", {"query": query, "image": os.path.basename(image_path) if image_path else None})
@@ -212,3 +224,17 @@ def run(query: str, image_path: str = None) -> dict:
 
 
 run_aegis = run
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print('Usage: python -m core.agent "your query here"')
+        sys.exit(1)
+    try:
+        result = run(" ".join(sys.argv[1:]))
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    print(result["answer"])
