@@ -1,0 +1,11 @@
+langgraph
+langchain
+langchain-community
+langchain-ollama
+langchain-text-splitters
+faiss-cpu
+rank-bm25
+ollama
+pypdf
+streamlit
+python-dotenv

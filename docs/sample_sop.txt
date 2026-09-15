@@ -1,0 +1,27 @@
+STANDARD OPERATING PROCEDURE — SOP-CDU-014
+Crude Distillation Unit: Pressure & Temperature Response
+
+1. NORMAL OPERATING LIMITS
+   - Column top pressure: 1.2-1.8 bar(g). Alarm at 2.0 bar(g); trip at 2.4 bar(g).
+   - Furnace outlet (COT) temperature: 340-360 degC. High alarm at 370 degC.
+   - Reflux drum level: 40-60%.
+
+2. HIGH PRESSURE RESPONSE (top pressure > 2.0 bar(g))
+   a. Confirm reading against the local gauge before acting.
+   b. Increase overhead condenser cooling duty.
+   c. Reduce furnace firing in 5 degC steps; do not exceed a 10 degC/min ramp.
+   d. If pressure continues rising toward 2.4 bar(g), initiate controlled unit
+      depressurization per SOP-SAF-003 and notify the shift supervisor.
+
+3. TEMPERATURE EXCURSION RESPONSE (COT > 370 degC)
+   a. Reduce fuel gas to the furnace.
+   b. Verify pass-flow balance across furnace coils.
+   c. Check for coking if a single pass reads > 15 degC above the others.
+
+4. HYDROGEN SULFIDE (H2S) SAFETY
+   - H2S is lethal above 100 ppm. Personal monitors alarm at 10 ppm.
+   - On any H2S alarm: don SCBA, evacuate upwind, account for all personnel,
+     and do not re-enter until readings are below 10 ppm.
+
+5. PRESSURE UNIT CONVERSION
+   - 1 bar = 100 kPa = 14.5038 psi. Gauge pressure bar(g) = absolute bar - 1.013.
