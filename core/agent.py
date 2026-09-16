@@ -204,10 +204,19 @@ def reflect_node(state):
 
 def _after_reflect(state):
     """Loop back to RAG for another retrieval pass if reflect found the evidence
-    insufficient, capped at MAX_LOOPS so the graph can never run away."""
+    insufficient, capped at MAX_LOOPS so the graph can never run away.
+
+    Only loop when RAG can actually contribute more. The retry path is
+    bump_loop → rag, so if the plan disabled RAG a second pass changes nothing:
+    rag_node no-ops on the same state, safety_check and reflect re-run to the
+    identical verdict, and the agent burns two more reflect calls (~10-15s) to
+    reach the answer it already had. A reflect that keeps saying "insufficient"
+    with no retrieval to gather from would otherwise waste the full loop budget on
+    every such query."""
     insufficient = not state.get("reflection", {}).get("sufficient", True)
+    can_gather_more = bool(state.get("plan", {}).get("needs_rag"))
     loop_count = state.get("loop_count", 0)
-    if insufficient and loop_count < MAX_LOOPS:
+    if insufficient and can_gather_more and loop_count < MAX_LOOPS:
         return "retry"
     return "answer"
 

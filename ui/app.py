@@ -724,9 +724,24 @@ def render_tracker(placeholder, done: dict, active: str, elapsed: float, skipped
     )
 
 
-def render_timing(times: dict):
+def _skipped_steps(result: dict) -> set:
+    """Which pipeline steps contributed no evidence to this run — the same
+    evidence test the live tracker uses (STEP_EVIDENCE), so the timing bar and
+    the tracker can never disagree about what ran. A fast step that DID produce a
+    result is never called skipped: the deterministic safety check settles a
+    CRITICAL verdict in ~0.02s, and labelling that "skipped" would hide the single
+    most important step behind a stopwatch quirk."""
+    return {step for step in PIPELINE_STEPS
+            if not result.get(STEP_EVIDENCE.get(step, step))}
+
+
+def render_timing(times: dict, skipped: set = frozenset()):
     """Proportional bar + legend. A skipped step keeps a visible sliver so the
-    operator can see it was considered and not silently dropped."""
+    operator can see it was considered and not silently dropped.
+
+    `skipped` is the evidence-based set from _skipped_steps — never inferred from
+    how long a step took. A step that ran fast is shown with its real time; only a
+    step that produced nothing is labelled "skipped"."""
     # Numbers only: timing can come back from a chat file written by an older build.
     num = (int, float)
     steps = [(k, v) for k, v in times.items()
@@ -738,10 +753,13 @@ def render_timing(times: dict):
     for name, secs in steps:
         color = STEP_COLORS.get(name, "#555")
         width = max((secs / total) * 100, 0.8)
-        # A step that took no measurable time was skipped by the plan, not run in
-        # 0s — saying "skipped" is the honest label and reads faster than "0s".
-        shown = f"{secs:g}s" if secs >= 0.05 else "skipped"
-        opacity = "1" if secs >= 0.05 else ".3"
+        # "skipped" means the step produced no evidence — not that it was quick.
+        # A step that ran shows its real measured time, the same value the live
+        # tracker printed for it, so the two never disagree (the safety check is
+        # legitimately ~0.02s and must read as run, not skipped).
+        is_skipped = name in skipped
+        shown = "skipped" if is_skipped else f"{secs:g}s"
+        opacity = ".3" if is_skipped else "1"
         segs.append(
             f'<span title="{html.escape(f"{STEP_LABELS.get(name, name)} · {shown}")}" '
             f'style="width:{width:.2f}%;background:{color};opacity:{opacity}"></span>'
@@ -845,6 +863,13 @@ def _load_session(chat_id: str):
             "loop_count": last.get("loop_count", 0),
             "network_audit": last.get("network_audit"),
             "context": steps.get("context"),
+            # The remaining per-node evidence, so _skipped_steps() reads a restored
+            # run exactly as it read the live one — the timing bar on a reloaded
+            # chat then marks the same steps skipped as the tracker did when it ran.
+            "plan": steps.get("plan"),
+            "vision": steps.get("vision"),
+            "calc": steps.get("calc"),
+            "reflection": steps.get("reflection"),
             "image_path": last.get("image_path"),
         }
         timing = last.get("timing")
@@ -1191,13 +1216,19 @@ with tab_ask:
                         step_times["total"] = elapsed
                         render_tracker(tracker, step_times, "", elapsed, skipped)
                         break
-                    step_times[node_name] = round(elapsed - last_t, 2)
+                    # Accumulate, don't overwrite: reflect's loop can revisit rag and
+                    # reflect several times, and a step's time is the sum of its passes.
+                    # Overwriting showed only the last pass, so the breakdown no longer
+                    # added up to the total an operator saw at the top of the bar.
+                    step_times[node_name] = round(step_times.get(node_name, 0.0) + elapsed - last_t, 2)
                     last_t = elapsed
                     # A node that returned {} left no evidence in the state — show it
-                    # hollow rather than ticking work that never happened.
+                    # hollow rather than ticking work that never happened. A retry that
+                    # finally produces evidence clears the earlier skip, so the mark
+                    # always reflects the run's final state, not its first pass.
                     evidence_key = STEP_EVIDENCE.get(node_name)
-                    if evidence_key and not state.get(evidence_key):
-                        skipped.add(node_name)
+                    if evidence_key:
+                        (skipped.discard if state.get(evidence_key) else skipped.add)(node_name)
                     nxt = next(
                         (s for s in PIPELINE_STEPS if s not in step_times),
                         "",
@@ -1253,7 +1284,7 @@ with tab_ask:
         times = st.session_state.get("step_times", {})
         if times:
             st.markdown('<div class="sec-head" style="margin-top:.5rem">Timing</div>', unsafe_allow_html=True)
-            render_timing(times)
+            render_timing(times, _skipped_steps(result))
 
         if result.get("requires_approval"):
             if st.session_state.get("signed_off"):
