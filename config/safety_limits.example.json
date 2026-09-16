@@ -1,0 +1,7 @@
+{
+  "_readme": "Copy this file to config/safety_limits.json and fill in limits verified from YOUR plant's own SOPs, equipment datasheets, or the actual applicable standard for your machine class. AEGIS never invents these numbers — leave a check's block out (or its limits null) and the agent will only apply it when a query or retrieved SOP text states the limit explicitly. 'source' is a citation you fill in, not something AEGIS checks.",
+  "pressure": { "safe_limit": null, "critical_limit": null, "source": "" },
+  "temperature": { "safe_limit": null, "critical_limit": null, "source": "" },
+  "vibration": { "safe_limit": null, "source": "" },
+  "wall_thickness": { "safe_limit": null, "source": "" }
+}

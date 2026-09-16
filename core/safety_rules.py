@@ -8,6 +8,8 @@ arguments rather than hardcoding industry thresholds (e.g. ISO 10816-3 zone
 boundaries) from memory: an unverified constant baked into "deterministic"
 code is just a hallucination with better production values.
 """
+import json
+import os
 from dataclasses import dataclass, asdict
 
 
@@ -20,6 +22,19 @@ class Verdict:
 
     def dict(self):
         return asdict(self)
+
+
+def load_reference_limits(path: str = None) -> dict:
+    """Optional operator-supplied limits (see config/safety_limits.example.json)
+    so a plant doesn't have to restate its own verified numbers in every query.
+    Never a source of invented numbers — if the file is absent, or a check's
+    limit is null, the caller gets nothing and falls back to whatever the query
+    or retrieved SOP text actually states."""
+    path = path or os.getenv("SAFETY_LIMITS_FILE", "config/safety_limits.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return json.load(f)
 
 
 class SafetyChecker:
@@ -77,4 +92,5 @@ if __name__ == "__main__":  # ponytail: self-check against SOP-MNT-402's real nu
     assert c.check_temperature(372, 360, 370)["status"] == "CRITICAL"
     assert c.check_vibration(12.0, 11.2)["status"] == "EXCEEDS"
     assert c.check_wall_thickness(5.0, 6.35)["status"] == "BELOW_MINIMUM"
+    assert load_reference_limits("nonexistent.json") == {}
     print("safety_rules ok — deterministic verdicts match SOP-MNT-402's tiers")

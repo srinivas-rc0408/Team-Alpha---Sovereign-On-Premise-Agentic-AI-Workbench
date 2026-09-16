@@ -7,6 +7,7 @@ thin, capped at MAX_LOOPS retries so the agent can never run away.
 """
 import json
 import os
+import time
 from typing import Optional, TypedDict
 
 import ollama
@@ -119,7 +120,16 @@ def safety_check_node(state):
     invented); SafetyChecker's plain comparisons decide the verdict."""
     sc = state["plan"].get("safety_check") or {}
     check_type = sc.get("type", "none")
-    if check_type == "none" or sc.get("reading") is None or sc.get("safe_limit") is None:
+    if check_type == "none" or sc.get("reading") is None:
+        return {}
+    used_reference = False
+    if sc.get("safe_limit") is None:
+        ref = safety_rules.load_reference_limits().get(check_type, {})
+        if ref.get("safe_limit") is not None:
+            sc = {**sc, "safe_limit": ref["safe_limit"],
+                  "critical_limit": sc.get("critical_limit", ref.get("critical_limit"))}
+            used_reference = True
+    if sc.get("safe_limit") is None:
         return {}
     checker = safety_rules.SafetyChecker()
     try:
@@ -135,10 +145,12 @@ def safety_check_node(state):
             return {}
     except (KeyError, TypeError, ZeroDivisionError):
         return {}
-    audit.log("safety_check", {"type": check_type, "input": sc, "verdict": verdict})
+    audit.log("safety_check", {"type": check_type, "input": sc, "verdict": verdict,
+                                "used_reference_config": used_reference})
+    ref_note = " (limit from config/safety_limits.json)" if used_reference else ""
     return {
         "safety": verdict,
-        "trace": state["trace"] + [f"SAFETY_CHECK {check_type}: {verdict['status']}"],
+        "trace": state["trace"] + [f"SAFETY_CHECK {check_type}: {verdict['status']}{ref_note}"],
     }
 
 
@@ -266,20 +278,38 @@ def _check_ollama():
         ) from e
 
 
-def run(query: str, image_path: str = None) -> dict:
+def run_streaming(query: str, image_path: str = None):
+    """Yields (node_name, elapsed_seconds, state_so_far) as each node actually
+    completes, via LangGraph's .stream() — real incremental progress, not an
+    animated replay of an already-finished run. The final yield uses node_name
+    "__final__" and carries the complete state, network audit included."""
     _check_ollama()
     if _AGENT["g"] is None:
         _AGENT["g"] = build_agent()
     audit.log("query", {"query": query, "image": os.path.basename(image_path) if image_path else None})
-    result, net_report = network_monitor.audit(
-        _AGENT["g"].invoke, {"query": query, "image_path": image_path, "trace": []}
-    )
+
+    io_before = network_monitor.snapshot_io()
+    t0 = time.time()
+    full = {"query": query, "image_path": image_path, "trace": []}
+    for step in _AGENT["g"].stream(full):
+        node_name, output = next(iter(step.items()))
+        full.update(output or {})  # LangGraph's stream reports a node's {} return as None
+        yield node_name, round(time.time() - t0, 2), dict(full)
+
+    net_report = network_monitor.report(io_before)
     audit.log("network_audit", net_report)
-    result["network_audit"] = net_report
-    result["trace"].append(
+    full["network_audit"] = net_report
+    full["trace"].append(
         f"NETWORK_AUDIT {'clean' if net_report['clean'] else 'EXTERNAL CONNECTIONS DETECTED'}"
     )
-    return result
+    yield "__final__", round(time.time() - t0, 2), full
+
+
+def run(query: str, image_path: str = None) -> dict:
+    final = None
+    for _, _, state in run_streaming(query, image_path):
+        final = state
+    return final
 
 
 run_aegis = run
