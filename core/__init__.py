@@ -50,3 +50,29 @@ def _normalise_ollama_host() -> str:
 
 
 OLLAMA_HOST = _normalise_ollama_host()
+
+def _keep_alive_seconds() -> int:
+    """How long Ollama keeps a model in memory after a request, in SECONDS.
+
+    Ollama's default is 5 minutes, so any pause longer than that — every question in
+    a demo, most of a plant shift — reloads a 5 GB model first: measured 4.1s cold vs
+    0.5s warm per call on a 4 GB RTX 3050 Ti, and one query makes several calls.
+    Sent with every request, so it holds however the Ollama service was started, and
+    Ollama still evicts a model early when another needs the memory — this cannot
+    exhaust the GPU.
+
+    Seconds as an int, not Ollama's "60m" duration string: OllamaEmbeddings types
+    this field as int-only and rejects the string outright, while ChatOllama and the
+    raw client accept either. An int is the one form all three take. The env var
+    still accepts the friendly "30m"/"2h" spelling people expect from Ollama."""
+    raw = os.getenv("OLLAMA_KEEP_ALIVE", "60m").strip().lower() or "60m"
+    units = {"s": 1, "m": 60, "h": 3600}
+    try:
+        if raw[-1] in units:
+            return max(1, int(float(raw[:-1]) * units[raw[-1]]))
+        return max(1, int(float(raw)))  # bare number: seconds, as Ollama reads it
+    except ValueError:
+        return 3600
+
+
+KEEP_ALIVE = _keep_alive_seconds()

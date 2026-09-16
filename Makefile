@@ -20,6 +20,8 @@ run:
 test:
 	./venv/bin/python test_aegis.py
 	@echo ""
+	./venv/bin/python test_ui.py
+	@echo ""
 	@echo "--- module self-checks ---"
 	./venv/bin/python -m core.safety_rules
 	./venv/bin/python -m core.tools
@@ -28,6 +30,7 @@ test:
 	./venv/bin/python -m core.doc_diff
 	./venv/bin/python -m core.history
 	./venv/bin/python -m core.offline_check
+	./venv/bin/python -m core.rag
 
 index:
 	./venv/bin/python -c "from core.rag import build_index; print(f'Indexed {build_index()} chunks')"

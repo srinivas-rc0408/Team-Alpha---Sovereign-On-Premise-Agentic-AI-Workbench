@@ -15,7 +15,7 @@ import ollama
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
 
-from . import audit, network_monitor, safety_rules, tools
+from . import KEEP_ALIVE, audit, network_monitor, safety_rules, tools
 
 
 MAX_LOOPS = 2  # reflect may send the agent back for more evidence at most this many times
@@ -51,6 +51,7 @@ def _llm(fmt=None):
     return ChatOllama(
         model=os.getenv("LLM_MODEL", "qwen2.5:7b"),
         base_url=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+        keep_alive=KEEP_ALIVE,
         temperature=0,
         format=fmt,
     )

@@ -20,7 +20,6 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from core import agent, audit, doc_diff, history, offline_check, rag
 
@@ -38,9 +37,8 @@ st.set_page_config(page_title="Aegis — Refinery AI", page_icon="🛡️", layo
 # stopped (window closed / Ctrl+C), never an internet problem, and telling an
 # operator to check their internet undermines the whole guarantee. That text is
 # baked into Streamlit's frontend with no Python setting, so we rewrite it in the
-# DOM. The observer is installed from a 0-height helper iframe (same-origin, so it
-# can reach window.parent) and keeps running after the socket drops, so it still
-# catches the dialog when it appears. Guarded so repeated reruns install it once.
+# DOM. The observer keeps running after the socket drops, so it still catches
+# the dialog when it appears. Guarded so repeated reruns install it once.
 _CONNECTION_MESSAGE_FIX = """
 <script>
 (function () {
@@ -82,7 +80,13 @@ _CONNECTION_MESSAGE_FIX = """
 })();
 </script>
 """
-components.html(_CONNECTION_MESSAGE_FIX, height=0)
+# st.html with JavaScript, in a hidden keyed container. Not components.html: that
+# API is past its announced removal date and logged a deprecation on every rerun.
+# Not st.iframe either: it rejects height=0 with StreamlitInvalidHeightError, and
+# any visible height leaves a gap above the hero. st.html runs in the app's own
+# document, where window.parent is window itself, so the script is unchanged.
+with st.container(key="connfix"):
+    st.html(_CONNECTION_MESSAGE_FIX, unsafe_allow_javascript=True)
 
 # ────────────────────────────── design tokens ──────────────────────────────
 # Mirrored in .streamlit/config.toml [theme] so Streamlit's own internals
@@ -120,6 +124,7 @@ CSS = f"""
    `visibility:hidden` on the header leaves a collapsed sidebar with no way to
    reopen it — history, privacy audit and the index rebuild all become
    unreachable until a page reload. Hide the chrome, keep the control. */
+.st-key-connfix {{ display: none; }}
 #MainMenu, [data-testid="stAppDeployButton"], [data-testid="stToolbar"],
 [data-testid="stDecoration"], footer {{ display: none !important; }}
 /* The header keeps its height and its pointer events; only its chrome is hidden
@@ -722,7 +727,10 @@ def render_tracker(placeholder, done: dict, active: str, elapsed: float, skipped
 def render_timing(times: dict):
     """Proportional bar + legend. A skipped step keeps a visible sliver so the
     operator can see it was considered and not silently dropped."""
-    steps = [(k, v) for k, v in times.items() if k != "total" and k in STEP_LABELS]
+    # Numbers only: timing can come back from a chat file written by an older build.
+    num = (int, float)
+    steps = [(k, v) for k, v in times.items()
+             if k != "total" and k in STEP_LABELS and isinstance(v, num) and not isinstance(v, bool)]
     if not steps:
         return
     total = sum(v for _, v in steps) or 1
@@ -743,7 +751,7 @@ def render_timing(times: dict):
             f'{STEP_LABELS.get(name, name)} <b>{shown}</b></span>'
         )
     st.markdown(
-        f'<div class="ttotal">{times.get("total", 0):g}s total</div>'
+        f'<div class="ttotal">{(times.get("total") if isinstance(times.get("total"), num) else sum(v for _, v in steps)):g}s total</div>'
         f'<div class="tbar">{"".join(segs)}</div>'
         f'<div class="tlegend">{"".join(legend)}</div>',
         unsafe_allow_html=True,
@@ -772,10 +780,12 @@ def render_verdict(result: dict):
     out of the answer text, so the card cannot drift from the verdict.
     """
     safety = result.get("safety")
-    if not safety:
+    # Restored runs come from disk and may predate any given field, so every read
+    # below tolerates absence. A verdict with no status isn't a verdict: skip the card.
+    if not isinstance(safety, dict) or not safety.get("status"):
         return
-    si = result.get("safety_input") or {}
-    status = safety["status"]
+    si = result.get("safety_input") if isinstance(result.get("safety_input"), dict) else {}
+    status = str(safety["status"])
     tone = tone_of(status)
     glyph = {"crit": "alert", "warn": "alert", "ok": "check"}[tone]
 
@@ -792,8 +802,9 @@ def render_verdict(result: dict):
         ))
     if si.get("source"):
         rows.append(("Standard reference", f'<span style="color:#BBB">{html.escape(str(si["source"]))}</span>'))
-    rows.append(("Required action", html.escape(safety["action"])))
-    if safety.get("overage") is not None:
+    if safety.get("action"):
+        rows.append(("Required action", html.escape(str(safety["action"]))))
+    if isinstance(safety.get("overage"), (int, float)):
         over = safety["overage"]
         word = "over the safe limit" if over > 0 else "within the safe limit"
         rows.append(("Margin", f'<span class="num">{_fmt(abs(over))}</span> <span style="color:#666">{word}</span>'))
@@ -818,11 +829,13 @@ def _load_session(chat_id: str):
         return
     st.session_state["session"] = session
     last = session["entries"][-1] if session["entries"] else None
-    if last:
-        steps = last.get("steps") or {}
+    if isinstance(last, dict):
+        steps = last.get("steps") if isinstance(last.get("steps"), dict) else {}
+        # .get throughout: chats saved by older builds lack newer fields, and a
+        # restored run must render whatever it has rather than crash on what it lacks.
         st.session_state["result"] = {
-            "query": last["query"],
-            "answer": last["answer"],
+            "query": last.get("query", ""),
+            "answer": last.get("answer", ""),
             "safety": last.get("safety"),
             # Persisted alongside the verdict so a restored run renders the same
             # limits and citation it was decided against, not just the status.
@@ -834,7 +847,8 @@ def _load_session(chat_id: str):
             "context": steps.get("context"),
             "image_path": last.get("image_path"),
         }
-        st.session_state["step_times"] = last.get("timing", {})
+        timing = last.get("timing")
+        st.session_state["step_times"] = timing if isinstance(timing, dict) else {}
         st.session_state["restored_from"] = session["title"]
     st.session_state["signed_off"] = False
 
@@ -883,7 +897,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    if st.button("Privacy self-audit", use_container_width=True, key="privacy_btn",
+    if st.button("Privacy self-audit", width="stretch", key="privacy_btn",
                  help="Re-run all four offline checks now and show the raw network log"):
         st.session_state["privacy_audit"] = offline_check.verify_offline()
 
@@ -923,7 +937,7 @@ with st.sidebar:
     st.divider()
     st.markdown(f'<div class="sb-label">{icon("message", 12)} Chat history</div>', unsafe_allow_html=True)
 
-    if st.button("New chat", use_container_width=True, key="new_chat"):
+    if st.button("New chat", width="stretch", key="new_chat"):
         st.session_state["session"] = history.new_session()
         for key in ("result", "step_times", "signed_off", "restored_from"):
             st.session_state.pop(key, None)
@@ -965,7 +979,7 @@ with st.sidebar:
             row, delete_col = st.columns([6, 1], gap="small")
             marker = "▸ " if chat["id"] == current_id else ""
             if row.button(f"{marker}{chat['title'][:34]}", key=f"chat_{chat['id']}",
-                          use_container_width=True, help=chat.get("preview") or chat["title"]):
+                          width="stretch", help=chat.get("preview") or chat["title"]):
                 _load_session(chat["id"])
                 st.rerun()
             with delete_col.container(key=f"del_{chat['id']}"):
@@ -1001,20 +1015,33 @@ with st.sidebar:
 
     st.divider()
     st.markdown(f'<div class="sb-label">{icon("database", 12)} Knowledge base</div>', unsafe_allow_html=True)
-    if st.button("Rebuild index from docs/", use_container_width=True, key="rebuild"):
+    if st.button("Rebuild index from docs/", width="stretch", key="rebuild"):
         with st.spinner("Embedding documents locally…"):
             try:
                 st.success(f"Indexed {rag.build_index()} chunks.")
             except Exception as e:
                 st.error(agent.friendly_error(e))
+        # Shown on success too: a skipped SOP means answers silently lack it.
+        if rag.last_skipped:
+            st.warning(
+                f"{len(rag.last_skipped)} document(s) could not be indexed, so AEGIS "
+                "cannot answer from them:\n\n"
+                + "\n".join(f"- **{html.escape(name)}** — {html.escape(reason)}"
+                            for name, reason in rag.last_skipped)
+            )
 
     st.divider()
     st.markdown(f'<div class="sb-label">{icon("activity", 12)} System health</div>', unsafe_allow_html=True)
-    ok_chain, n_entries = audit.verify()
+    # verify() counts entries up to a break, not the total, so the total comes from
+    # read(). "Broken at #N" rather than "tampered": a power cut mid-write breaks the
+    # chain too, and the operator needs to know where, not an accusation.
+    ok_chain, n_verified = audit.verify()
+    n_entries = len(audit.read())
+    chain_label = "Intact" if ok_chain else f"Broken at #{n_verified + 1}"
     docker_ok = _docker_available()
     health = [
         ("Audit entries", f"{n_entries}", "ok"),
-        ("Chain integrity", "Intact" if ok_chain else "TAMPERED", "ok" if ok_chain else "crit"),
+        ("Chain integrity", chain_label, "ok" if ok_chain else "crit"),
         ("Docker sandbox", "Available" if docker_ok else "In-process fallback", "ok" if docker_ok else "warn"),
     ]
     color_map = {"ok": OK, "warn": WARN, "crit": CRIT}
@@ -1086,7 +1113,7 @@ with tab_ask:
     st.markdown('<div class="sec-head">Try an example</div>', unsafe_allow_html=True)
     for i, (col, ex) in enumerate(zip(st.columns(len(EXAMPLES), gap="small"), EXAMPLES)):
         with col.container(key=f"ex_{i}"):
-            if st.button(ex, key=f"exbtn_{i}", help=ex, use_container_width=True,
+            if st.button(ex, key=f"exbtn_{i}", help=ex, width="stretch",
                          disabled=bool(pending)):
                 st.session_state["query_input"] = ex
 
@@ -1111,12 +1138,12 @@ with tab_ask:
     # the work. A second click during a 60s run can't queue a duplicate query.
     run_clicked = st.button(
         "Processing…" if pending else "Run AEGIS Analysis",
-        type="primary", use_container_width=True, key="run", disabled=bool(pending),
+        type="primary", width="stretch", key="run", disabled=bool(pending),
     )
 
     run_error = st.session_state.pop("run_error", None)
     if run_error:
-        st.error(run_error["message"])
+        (st.warning if run_error.get("level") == "warning" else st.error)(run_error["message"])
         with st.expander("Technical detail (for support)"):
             st.code(run_error["detail"], language=None)
 
@@ -1145,9 +1172,9 @@ with tab_ask:
                 tmp.write(img.getvalue())
                 tmp.close()
                 image_path = tmp.name
-            except Exception as e:
+            except Exception:
                 # A corrupt or unreadable upload must not sink the text query.
-                st.warning(f"Could not read that image ({e}) — continuing without it.")
+                st.warning("That photo couldn't be read — running the question without it.")
                 image_path = None
 
         tracker = st.empty()
@@ -1156,56 +1183,64 @@ with tab_ask:
         result, step_times, skipped = None, {}, set()
         cursor = history.audit_cursor()
         try:
-            last_t = 0.0
-            for node_name, elapsed, state in agent.run_streaming(query, image_path):
-                if node_name == "__final__":
-                    result = state
-                    step_times["total"] = elapsed
-                    render_tracker(tracker, step_times, "", elapsed, skipped)
-                    break
-                step_times[node_name] = round(elapsed - last_t, 2)
-                last_t = elapsed
-                # A node that returned {} left no evidence in the state — show it
-                # hollow rather than ticking work that never happened.
-                evidence_key = STEP_EVIDENCE.get(node_name)
-                if evidence_key and not state.get(evidence_key):
-                    skipped.add(node_name)
-                nxt = next(
-                    (s for s in PIPELINE_STEPS if s not in step_times),
-                    "",
-                ) if node_name in PIPELINE_STEPS else node_name
-                render_tracker(tracker, step_times, nxt, elapsed, skipped)
-        except Exception as e:
-            # Never show an operator a traceback — friendly_error ends in the exact
-            # command that fixes it, and the raw detail stays available on demand.
-            # Stashed and rerun so the button unlocks; shown at the top of that pass.
-            st.session_state["run_error"] = {
-                "message": agent.friendly_error(e),
-                "detail": f"{type(e).__name__}: {e}",
-            }
-            st.rerun()
-
-        if result:
-            st.session_state["result"] = result
-            st.session_state["step_times"] = step_times
-            st.session_state["signed_off"] = False
-            st.session_state.pop("restored_from", None)
-            saved_ok = True
             try:
-                history.save_turn(
-                    st.session_state["session"], result, cursor=cursor, timing=step_times
-                )
-            except OSError as e:
-                # The answer is already on screen; a failed write must not hide it.
-                saved_ok = False
-                st.warning(f"Could not save this run to history: {e}")
-            if saved_ok:
-                # The sidebar is rendered at the top of the script, BEFORE this save,
-                # so without a rerun it would keep showing history as of before this
-                # run — the just-finished chat wouldn't appear until the next click.
-                # Rerun so the sidebar refreshes now; the result persists in
-                # session_state and re-renders below on the fresh pass.
-                st.rerun()
+                last_t = 0.0
+                for node_name, elapsed, state in agent.run_streaming(query, image_path):
+                    if node_name == "__final__":
+                        result = state
+                        step_times["total"] = elapsed
+                        render_tracker(tracker, step_times, "", elapsed, skipped)
+                        break
+                    step_times[node_name] = round(elapsed - last_t, 2)
+                    last_t = elapsed
+                    # A node that returned {} left no evidence in the state — show it
+                    # hollow rather than ticking work that never happened.
+                    evidence_key = STEP_EVIDENCE.get(node_name)
+                    if evidence_key and not state.get(evidence_key):
+                        skipped.add(node_name)
+                    nxt = next(
+                        (s for s in PIPELINE_STEPS if s not in step_times),
+                        "",
+                    ) if node_name in PIPELINE_STEPS else node_name
+                    render_tracker(tracker, step_times, nxt, elapsed, skipped)
+            except Exception as e:
+                # Never show an operator a traceback — friendly_error ends in the exact
+                # command that fixes it, and the raw detail stays available on demand.
+                st.session_state["run_error"] = {
+                    "message": agent.friendly_error(e),
+                    "detail": f"{type(e).__name__}: {e}",
+                }
+
+            if result:
+                st.session_state["result"] = result
+                st.session_state["step_times"] = step_times
+                st.session_state["signed_off"] = False
+                st.session_state.pop("restored_from", None)
+                try:
+                    history.save_turn(
+                        st.session_state["session"], result, cursor=cursor, timing=step_times
+                    )
+                except OSError as e:
+                    # The answer still shows below; only the history write failed.
+                    st.session_state["run_error"] = {
+                        "level": "warning",
+                        "message": "The answer is below, but it couldn't be saved to chat history.\n\n"
+                                   + agent.friendly_error(e),
+                        "detail": f"{type(e).__name__}: {e}",
+                    }
+        finally:
+            # History keeps its own copy of the photo (history.store_media), so the
+            # upload's temp file is done with — every exit path removes it.
+            if image_path:
+                try:
+                    os.remove(image_path)
+                except OSError:
+                    pass
+
+        # Unconditional: this rerun is what releases the "Processing…" lock, whatever
+        # happened above — success, agent error, failed save, or a stream that ended
+        # early. It also refreshes the sidebar, which rendered before this run saved.
+        st.rerun()
 
     result = st.session_state.get("result")
     if result:
@@ -1249,7 +1284,7 @@ with tab_ask:
                         st.warning("Enter the supervisor's name — sign-off is recorded against a named person.")
                     else:
                         signed_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        audit.log("sign_off", {"query": result["query"], "approver": approver.strip(),
+                        audit.log("sign_off", {"query": result.get("query", ""), "approver": approver.strip(),
                                                "signed_at_local": signed_at})
                         st.session_state["approver"] = approver.strip()
                         st.session_state["signed_at"] = signed_at
@@ -1268,7 +1303,7 @@ with tab_ask:
                 st.text(result["context"])
 
         net = result.get("network_audit")
-        if net:
+        if isinstance(net, dict) and "clean" in net:
             with st.expander("Network audit — air-gap proof", expanded=not net["clean"]):
                 if net["clean"]:
                     st.markdown(
@@ -1277,17 +1312,17 @@ with tab_ask:
                     )
                 else:
                     st.markdown(pill("External connection detected", "crit", "alert"), unsafe_allow_html=True)
-                    st.write(net["external_connections"])
+                    st.write(net.get("external_connections", []))
                 st.caption(
-                    f"System-wide bytes during window: {net['system_wide_bytes_sent']} sent / "
-                    f"{net['system_wide_bytes_recv']} recv (includes any other traffic on the "
+                    f"System-wide bytes during window: {net.get('system_wide_bytes_sent', '—')} sent / "
+                    f"{net.get('system_wide_bytes_recv', '—')} recv (includes any other traffic on the "
                     "machine — not AEGIS-specific; the connection list above is what's scoped)."
                 )
                 st.text("Connections opened by AEGIS's own process tree:")
-                st.text("\n".join(net["connections"]) or "(none)")
+                st.text("\n".join(map(str, net.get("connections") or [])) or "(none)")
 
         entries = audit.read()[-20:]
-        with st.expander(f"Audit trail · {n_entries} entries · chain {'intact' if ok_chain else 'TAMPERED'}"):
+        with st.expander(f"Audit trail · {n_entries} entries · chain {chain_label.lower()}"):
             st.caption("Last 20 entries, newest last. Times are UTC, as written to the log.")
             rows = []
             for e in entries:
@@ -1333,23 +1368,51 @@ with tab_compare:
     new_file = c2.file_uploader("New version", type=["pdf", "txt"], key="new_doc")
 
     compare_clicked = st.button("Compare documents", type="primary",
-                                use_container_width=True, key="compare")
+                                width="stretch", key="compare")
     if compare_clicked and not (old_file and new_file):
         st.warning("Attach both revisions — an old version and a new one — to compare them.")
     elif compare_clicked:
-        old_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(old_file.name)[1])
-        old_tmp.write(old_file.read())
-        old_tmp.close()
-        new_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(new_file.name)[1])
-        new_tmp.write(new_file.read())
-        new_tmp.close()
+        # Cleared first: if this comparison fails, the previous pair's results must
+        # not stay on screen looking like the answer for these files.
+        st.session_state.pop("diff_sections", None)
+        st.session_state.pop("diff_report", None)
+        paths = []
+        try:
+            for up in (old_file, new_file):
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(up.name)[1])
+                # getvalue(), not read(): read() leaves the buffer at its end, so a
+                # second Compare click wrote an empty file — and two empty files
+                # compare as "No differences detected".
+                tmp.write(up.getvalue())
+                tmp.close()
+                paths.append(tmp.name)
 
-        with st.spinner("Diffing documents and assessing safety impact…"):
-            try:
-                st.session_state["diff_sections"] = doc_diff.diff_documents(old_tmp.name, new_tmp.name)
-                st.session_state["diff_report"] = doc_diff.compare_documents(old_tmp.name, new_tmp.name)
-            except Exception as e:
-                st.error(agent.friendly_error(e))
+            with st.spinner("Diffing documents and assessing safety impact…"):
+                try:
+                    report = doc_diff.compare_documents(paths[0], paths[1])
+                    st.session_state["diff_report"] = report
+                    st.session_state["diff_sections"] = report["diff"]
+                except ValueError:
+                    # extract_text raises ValueError for an unreadable document. Only
+                    # now is each file probed on its own, so the happy path reads each
+                    # once, and the message names the file instead of a parser error.
+                    unreadable = []
+                    for label, up, path in (("Old version", old_file, paths[0]),
+                                            ("New version", new_file, paths[1])):
+                        try:
+                            doc_diff.extract_text(path)
+                        except ValueError as e:
+                            unreadable.append(f"**{label}** · {html.escape(up.name)} — {html.escape(str(e))}")
+                    st.error("Couldn't read the document.\n\n" + "\n\n".join(
+                        unreadable or ["The comparison failed on these files. Re-export them and try again."]))
+                except Exception as e:
+                    st.error(agent.friendly_error(e))
+        finally:
+            for path in paths:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
     d = st.session_state.get("diff_sections")
     report = st.session_state.get("diff_report")
