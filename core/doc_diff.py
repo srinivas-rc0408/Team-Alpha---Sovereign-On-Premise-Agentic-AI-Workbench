@@ -70,9 +70,15 @@ def diff_documents(old_path: str, new_path: str) -> dict:
 # shutdown/trip/SIL concept outright, or pairs a measured quantity with a limit
 # word. ponytail: keyword heuristic, not a parser — it over-flags rather than
 # under-flags on purpose; swap for a tagged-SOP schema if plants start supplying one.
-_STANDALONE = r"\bsil\s*-?\s*[0-4]\b|\bshutdown\b|\btrip\b|\bemergency\b|\bisolat"
+_STANDALONE = (r"\bsil\s*-?\s*[0-4]\b|\bshutdown\b|\btrip\b|\bemergency\b|\bisolat"
+               r"|\bh2s\b|\bhydrogen\s+sulfide\b")
 _SAFETY_TOPICS = r"\b(pressure|temperature|temp|vibration|thickness|flow|level|psi|bar|°c|deg\s*c|mm/s|mm)\b"
-_LIMIT_WORDS = r"\b(limit|max|maximum|min|minimum|setpoint|set\s*point|threshold|alarm|interval|allowable|rating)\b"
+# Frequency words count as limits: "verified quarterly" -> "annually" relaxes an
+# inspection interval exactly as 15 -> 17 bar relaxes a pressure limit, but has no
+# digit in it, so the number-only checks below missed it entirely.
+_FREQUENCY = r"daily|weekly|fortnightly|monthly|quarterly|annually|annual|yearly|biennially|biennial"
+_LIMIT_WORDS = (r"\b(limit|max|maximum|min|minimum|setpoint|set\s*point|threshold|alarm|interval"
+                rf"|allowable|rating|frequency|{_FREQUENCY})\b")
 
 
 def _is_safety_critical(text: str) -> bool:
@@ -83,7 +89,9 @@ def _is_safety_critical(text: str) -> bool:
 
 
 def _numbers(text: str) -> list[str]:
-    return re.findall(r"\d+(?:\.\d+)?", text)
+    """The quantities on a line: numbers, plus inspection frequencies, which are
+    thresholds written as words."""
+    return re.findall(rf"\d+(?:\.\d+)?|\b(?:{_FREQUENCY})\b", text.lower())
 
 
 def _section_label(section: str) -> str:
@@ -92,7 +100,12 @@ def _section_label(section: str) -> str:
 
 
 def _critical_lines(section: str) -> list[str]:
-    return [ln.strip() for ln in section.splitlines() if ln.strip() and _is_safety_critical(ln)]
+    """Safety-critical body lines. The first line is the section's label (already
+    reported as `section`), so it's skipped when there's a body — otherwise a
+    heading like "H2S monitoring" double-counts its own section."""
+    lines = [ln.strip() for ln in section.splitlines() if ln.strip()]
+    body = lines[1:] or lines
+    return [ln for ln in body if _is_safety_critical(ln)]
 
 
 def _flag_modified(old: str, new: str) -> list[dict]:
@@ -215,6 +228,21 @@ if __name__ == "__main__":  # ponytail: self-check — a pure-diffing test, no L
     assert any(f["old_value"].endswith("15 bar.") and f["new_value"].endswith("12 bar.")
                for f in high), report["safety_critical_changes"]
     assert not _is_safety_critical("Unrelated text.")
+
+    # Relaxing an inspection interval is a threshold move even with no digits in it.
+    insp_old = "Wall thickness must be verified quarterly by ultrasonic testing."
+    insp_new = "Wall thickness must be verified annually by ultrasonic testing."
+    assert _is_safety_critical(insp_old)
+    insp = _flag_modified("Section 3 Inspection\n" + insp_old, "Section 3 Inspection\n" + insp_new)
+    assert [f["risk_level"] for f in insp] == ["HIGH"], insp
+    # Toxic-gas controls are safety-critical on their own, with no limit word needed.
+    assert _is_safety_critical("Personal H2S monitors are mandatory within 10 m of the vessel.")
+    assert not _is_safety_critical("Keep walkways clear of hoses and loose tools.")
+    # A heading that merely names the topic is the section label, not a second change.
+    assert _critical_lines("Section 5 H2S monitoring\nPersonal H2S monitors are mandatory.") == [
+        "Personal H2S monitors are mandatory."]
+    # ...but a one-line section is all body, and must still be flagged.
+    assert _critical_lines("Trip the pump on high vibration.") == ["Trip the pump on high vibration."]
 
     os.remove(old)
     os.remove(new)

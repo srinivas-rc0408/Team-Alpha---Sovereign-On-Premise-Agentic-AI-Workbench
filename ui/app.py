@@ -6,12 +6,14 @@ structured verdict card reads `result["safety"]` / `result["safety_input"]`
 rather than parsing the answer prose.
 """
 import html
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 
 # `streamlit run ui/app.py` puts this file's own directory on sys.path, not the
 # project root, so the `core` package import below fails unless we add it back.
@@ -157,7 +159,9 @@ html, body, [data-testid="stApp"] {{ background: var(--bg); }}
    upload glyphs as Material Symbols ligatures, so forcing a text font onto them
    prints the literal ligature name ("keyboard_arrow_right") on screen. */
 [data-testid="stApp"], [data-testid="stApp"] p, [data-testid="stApp"] li,
-[data-testid="stApp"] label,
+[data-testid="stApp"] label, [data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] div, [data-testid="stApp"] button,
+[data-testid="stApp"] input, [data-testid="stApp"] textarea,
 [data-testid="stApp"] span:not([data-testid="stIconMaterial"]) {{ font-family: var(--font); }}
 
 [data-testid="stMainBlockContainer"] {{
@@ -183,7 +187,7 @@ html, body, [data-testid="stApp"] {{ background: var(--bg); }}
 }}
 
 /* ── typography ── */
-.hero {{ text-align: center; padding: .5rem 0 0; }}
+.hero {{ text-align: center; padding: .5rem 0 1.5rem; }}
 .hero-mark {{ display: inline-flex; align-items: center; gap: .7rem; color: var(--text); }}
 .hero-mark svg {{ width: 34px; height: 34px; color: var(--accent); }}
 .hero h1 {{
@@ -236,7 +240,12 @@ code, kbd, .mono {{ font-family: var(--mono) !important; font-size: .82rem; }}
 .offline .dot {{ background: var(--ok); box-shadow: 0 0 6px var(--ok); }}
 .offline.leak {{ background: #1F0D0D; border-color: #FF444455; color: var(--crit); }}
 .offline.leak .dot {{ background: var(--crit); box-shadow: 0 0 6px var(--crit); }}
-.sb-note {{ font-size: .72rem; color: var(--text-dim); margin: .5rem 0 .55rem; line-height: 1.45; }}
+/* Scoped through stMarkdownContainer on purpose: Streamlit sizes markdown <p> with
+   an emotion rule of equal-or-higher weight than a bare class, so `.sb-note`
+   alone rendered at full body size. Same for `.foot` below. */
+[data-testid="stMarkdownContainer"] p.sb-note {{
+  font-size: .72rem; color: var(--text-dim); margin: .5rem 0 .55rem; line-height: 1.45;
+}}
 /* Streamlit gives a markdown block no outer margin, so sidebar rhythm comes from
    the note's own margins plus the vertical-block gap — not from empty spacers. */
 [data-testid="stSidebar"] [data-testid="stMarkdown"] {{ margin-bottom: 0; }}
@@ -340,7 +349,25 @@ code, kbd, .mono {{ font-family: var(--mono) !important; font-size: .82rem; }}
   display: inline-block; padding: .1rem .45rem; border-radius: 5px;
   font-size: .68rem; font-weight: 600; letter-spacing: .04em; margin-right: .5rem;
 }}
-.chain .h {{ font-family: var(--mono); font-size: .72rem; color: #5A5A5A; }}
+.chain .h {{ font-family: var(--mono); font-size: .72rem; color: #777; }}
+.chain .ts {{ font-family: var(--mono); font-size: .72rem; color: #999; margin-right: .6rem; }}
+.chain details {{ margin: .3rem 0 .1rem; }}
+.chain summary {{
+  cursor: pointer; font-size: .7rem; color: #777; list-style: none; display: inline-flex;
+  align-items: center; gap: .3rem; transition: color .2s var(--ease);
+}}
+.chain summary::-webkit-details-marker {{ display: none; }}
+.chain summary::before {{ content: "›"; display: inline-block; transition: transform .2s var(--ease); }}
+.chain details[open] summary::before {{ transform: rotate(90deg); }}
+.chain summary:hover {{ color: var(--accent); }}
+.chain pre {{
+  margin: .35rem 0 0; padding: .6rem .7rem; max-height: 220px; overflow: auto;
+  font-family: var(--mono); font-size: .72rem; line-height: 1.5; color: #BBB;
+  white-space: pre-wrap; word-break: break-word;
+}}
+.signed {{ animation: signedFlash .9s var(--ease); }}
+@keyframes signedFlash {{ 0% {{ background: #00FF8833; }} 100% {{ background: #00FF880A; }} }}
+.thumb {{ display: flex; align-items: center; gap: .75rem; font-size: .8rem; color: var(--text-dim); }}
 
 /* ── diff ── */
 .diff {{
@@ -404,6 +431,10 @@ code, kbd, .mono {{ font-family: var(--mono) !important; font-size: .82rem; }}
   transform: translateY(-1px);
 }}
 [class*="st-key-ex_"] .stButton button p {{ font-size: .82rem !important; }}
+[class*="st-key-ex_"] .stButton button:disabled {{
+  opacity: .4; transform: none; box-shadow: none; border-color: var(--border);
+  color: var(--text-dim); cursor: not-allowed;
+}}
 
 /* Chat history rows: delete reveals on hover, and on keyboard focus so it stays
    reachable without a pointer. */
@@ -427,9 +458,17 @@ code, kbd, .mono {{ font-family: var(--mono) !important; font-size: .82rem; }}
 [class*="st-key-del_"] .stButton button:focus-visible {{ opacity: 1; }}
 [class*="st-key-del_"] .stButton button:hover {{ color: var(--crit); }}
 .chat-meta {{
-  font-size: .68rem; color: #5A5A5A; font-family: var(--mono);
-  padding: 0 .5rem .3rem; display: flex; align-items: center; gap: .4rem;
+  font-size: .68rem; color: #7A7A7A; font-family: var(--mono);
+  padding: 0 .5rem; display: flex; align-items: center; gap: .4rem;
 }}
+/* Title and its timestamp are one unit: tight inside the row, separated between
+   rows. With the sidebar's default gap the timestamp sat closer to the NEXT
+   chat's title than to its own. */
+[data-testid="stSidebar"] [class*="st-key-chatrow_"] {{ gap: 0; padding: .1rem 0 .55rem; }}
+/* Streamlit gives every markdown container margin-bottom:-1rem, which cancels the
+   17px meta line to a 0-height box that overflows into the next row. Zeroed here
+   so the row actually contains its own timestamp. */
+[data-testid="stSidebar"] [class*="st-key-chatrow_"] [data-testid="stMarkdownContainer"] {{ margin: -.1rem 0 0; }}
 
 /* ── inputs ── */
 [data-testid="stTextArea"] textarea, [data-testid="stTextInput"] input {{
@@ -516,9 +555,34 @@ code, kbd, .mono {{ font-family: var(--mono) !important; font-size: .82rem; }}
 ::-webkit-scrollbar-thumb {{ background: #222; border-radius: 4px; }}
 ::-webkit-scrollbar-thumb:hover {{ background: #333; }}
 
-.foot {{
-  text-align: center; font-size: .75rem; color: #444; padding: .5rem 0 0;
+/* #777 not the brief's #444: #444 on black is 2.3:1, and #5A5A5A meta text is
+   2.9:1 — both below the 4.5:1 floor for text an operator actually reads. */
+/* LLM summary card. Scoped with the testid so it can only ever match the keyed
+   container, never an element that happens to share the key text. */
+[data-testid="stVerticalBlock"].st-key-diff_summary {{
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+}}
+.st-key-diff_summary h1, .st-key-diff_summary h2, .st-key-diff_summary h3,
+.st-key-diff_summary h4 {{
+  font-size: .95rem !important; font-weight: 600; letter-spacing: 0;
+  margin: 1rem 0 .4rem !important; padding: 0 !important; color: var(--text);
+}}
+.st-key-diff_summary h1:first-child, .st-key-diff_summary h2:first-child,
+.st-key-diff_summary h3:first-child {{ margin-top: 0 !important; }}
+.st-key-diff_summary li, .st-key-diff_summary p {{ font-size: .88rem !important; color: #CCC; }}
+.st-key-diff_summary strong {{ color: var(--text); }}
+[data-testid="stMarkdownContainer"] p.foot {{
+  text-align: center; font-size: .75rem; color: #777; padding: .5rem 0 0;
   letter-spacing: .02em;
+}}
+
+/* Data, not decoration, gets the mono face: hashes, timestamps, timings, readings.
+   :is() takes its most specific argument, so this (0,3,0) beats the global font
+   rule's span selector (0,2,1) that was silently turning all of these sans. */
+[data-testid="stApp"] :is(.mono, code, .ttotal, .chat-meta, .chain .h, .chain .ts,
+  .track-status .el, .track .step .t, .tlegend b, .row .v .num, .chain pre) {{
+  font-family: var(--mono);
 }}
 
 @media (prefers-reduced-motion: reduce) {{
@@ -1006,6 +1070,11 @@ with st.expander("How AEGIS works"):
 tab_ask, tab_compare = st.tabs(["Ask AEGIS", "Document Comparison"])
 
 with tab_ask:
+    # Read first: while a run is in flight every input on this tab is locked, not
+    # just the button. Any widget interaction restarts a Streamlit script, so a
+    # stray click on an example card mid-run would silently abort the agent.
+    pending = st.session_state.get("pending_run")
+
     if st.session_state.get("restored_from"):
         st.markdown(
             f'<p class="sb-note" style="display:flex;align-items:center;gap:.5rem;margin-bottom:.2rem">'
@@ -1017,16 +1086,39 @@ with tab_ask:
     st.markdown('<div class="sec-head">Try an example</div>', unsafe_allow_html=True)
     for i, (col, ex) in enumerate(zip(st.columns(len(EXAMPLES), gap="small"), EXAMPLES)):
         with col.container(key=f"ex_{i}"):
-            if st.button(ex, key=f"exbtn_{i}", help=ex, use_container_width=True):
+            if st.button(ex, key=f"exbtn_{i}", help=ex, use_container_width=True,
+                         disabled=bool(pending)):
                 st.session_state["query_input"] = ex
 
     query = st.text_area(
         "Ask about SOPs, equipment, or a gauge reading", height=110, key="query_input",
         placeholder="Pressure on V-101 reads 18.4 bar — is that a violation?",
+        disabled=bool(pending),
     )
     img = st.file_uploader("Attach equipment or gauge photo (optional)", type=["png", "jpg", "jpeg"])
+    if img:
+        # Preview before the run, so the operator confirms it's the right photo
+        # before spending a minute of vision time on it. Streamlit's uploader row
+        # above already carries the filename and the remove control.
+        try:
+            st.image(img, width=160)
+        except Exception:
+            st.caption("Preview unavailable — the file may be corrupt; AEGIS will skip it if unreadable.")
 
-    run_clicked = st.button("Run AEGIS Analysis", type="primary", use_container_width=True, key="run")
+    # Two-pass run so the button can lock. Streamlit can't restyle a widget that
+    # already rendered during this pass, so a click only records the request and
+    # reruns; the next pass renders the button disabled as "Processing…" and does
+    # the work. A second click during a 60s run can't queue a duplicate query.
+    run_clicked = st.button(
+        "Processing…" if pending else "Run AEGIS Analysis",
+        type="primary", use_container_width=True, key="run", disabled=bool(pending),
+    )
+
+    run_error = st.session_state.pop("run_error", None)
+    if run_error:
+        st.error(run_error["message"])
+        with st.expander("Technical detail (for support)"):
+            st.code(run_error["detail"], language=None)
 
     if run_clicked and not query.strip():
         st.warning("Type a question first, or pick one of the examples above.")
@@ -1039,14 +1131,20 @@ with tab_ask:
             "retrieve from it instead."
         )
     elif run_clicked:
+        st.session_state["pending_run"] = {"query": query}
+        st.rerun()
+    elif pending:
+        # Popped before running, not after: if the agent raises, the lock must not
+        # outlive the run and leave the button stuck on "Processing…".
+        st.session_state.pop("pending_run", None)
+        query = pending["query"]
         image_path = None
         if img:
             try:
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(img.name)[1])
-                tmp.write(img.read())
+                tmp.write(img.getvalue())
                 tmp.close()
                 image_path = tmp.name
-                st.image(img, width=300)
             except Exception as e:
                 # A corrupt or unreadable upload must not sink the text query.
                 st.warning(f"Could not read that image ({e}) — continuing without it.")
@@ -1080,10 +1178,12 @@ with tab_ask:
         except Exception as e:
             # Never show an operator a traceback — friendly_error ends in the exact
             # command that fixes it, and the raw detail stays available on demand.
-            tracker.empty()
-            st.error(agent.friendly_error(e))
-            with st.expander("Technical detail (for support)"):
-                st.exception(e)
+            # Stashed and rerun so the button unlocks; shown at the top of that pass.
+            st.session_state["run_error"] = {
+                "message": agent.friendly_error(e),
+                "detail": f"{type(e).__name__}: {e}",
+            }
+            st.rerun()
 
         if result:
             st.session_state["result"] = result
@@ -1123,11 +1223,13 @@ with tab_ask:
         if result.get("requires_approval"):
             if st.session_state.get("signed_off"):
                 st.markdown(
-                    f'<div class="card" style="border-color:#00FF8833;background:#00FF880A;'
+                    f'<div class="card signed" style="border-color:#00FF8833;background:#00FF880A;'
                     f'display:flex;align-items:center;gap:.7rem;padding:1rem 1.25rem">'
                     f'<span style="color:var(--ok);display:flex">{icon("check", 17)}</span>'
                     f'<span style="font-size:.9rem">Signed off by '
-                    f'<strong>{html.escape(st.session_state["approver"])}</strong></span></div>',
+                    f'<strong>{html.escape(st.session_state["approver"])}</strong> at '
+                    f'<span class="mono">{html.escape(st.session_state.get("signed_at", ""))}</span>'
+                    f"</span></div>",
                     unsafe_allow_html=True,
                 )
             else:
@@ -1141,11 +1243,18 @@ with tab_ask:
                 )
                 approver = st.text_input("Supervisor name", key="approver_input",
                                          placeholder="Name of the authorising supervisor")
-                if st.button("Authorize & sign off", key="signoff", type="primary") and approver.strip():
-                    audit.log("sign_off", {"query": result["query"], "approver": approver.strip()})
-                    st.session_state["approver"] = approver.strip()
-                    st.session_state["signed_off"] = True
-                    st.rerun()
+                if st.button("Authorize & sign off", key="signoff", type="primary"):
+                    if not approver.strip():
+                        # Silently ignoring the click read as a broken button.
+                        st.warning("Enter the supervisor's name — sign-off is recorded against a named person.")
+                    else:
+                        signed_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        audit.log("sign_off", {"query": result["query"], "approver": approver.strip(),
+                                               "signed_at_local": signed_at})
+                        st.session_state["approver"] = approver.strip()
+                        st.session_state["signed_at"] = signed_at
+                        st.session_state["signed_off"] = True
+                        st.rerun()
 
         with st.expander("Reasoning trace"):
             for step in result.get("trace", []):
@@ -1179,13 +1288,25 @@ with tab_ask:
 
         entries = audit.read()[-20:]
         with st.expander(f"Audit trail · {n_entries} entries · chain {'intact' if ok_chain else 'TAMPERED'}"):
+            st.caption("Last 20 entries, newest last. Times are UTC, as written to the log.")
             rows = []
             for e in entries:
                 color = STEP_COLORS.get(e["event"], "#555")
+                payload = e.get("data")
+                try:
+                    body = json.dumps(payload, indent=2, default=str, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    body = str(payload)
+                if len(body) > 2000:
+                    body = body[:2000] + "\n… (truncated — full entry in logs/audit.jsonl)"
+                # Native <details>: collapsed by default, keyboard-operable, and no
+                # widget per row — twenty st.expanders would each cost a rerun hop.
                 rows.append(
-                    f'<div class="e"><span class="badge" style="background:{color}1F;color:{color}">'
+                    f'<div class="e"><span class="ts">{html.escape(str(e.get("ts", ""))[11:19])}</span>'
+                    f'<span class="badge" style="background:{color}1F;color:{color}">'
                     f'{html.escape(e["event"])}</span>'
-                    f'<span class="h">{html.escape(e["hash"][:16])}… ← {html.escape(e["prev_hash"][:12])}…</span></div>'
+                    f'<span class="h">{html.escape(e["hash"][:16])}… ← {html.escape(e["prev_hash"][:12])}…</span>'
+                    f"<details><summary>data</summary><pre>{html.escape(body)}</pre></details></div>"
                 )
             st.markdown(f'<div class="chain">{"".join(rows)}</div>', unsafe_allow_html=True)
 
@@ -1240,7 +1361,10 @@ with tab_compare:
 
         st.markdown('<div class="sec-head" style="margin-top:.5rem">Safety impact assessment</div>',
                     unsafe_allow_html=True)
-        st.markdown(report["summary"])
+        # LLM output arrives as free markdown with its own H1/H2s; contained and
+        # scaled so a model's "# Summary" can't outrank the console's own headings.
+        with st.container(key="diff_summary"):
+            st.markdown(report["summary"])
 
         if report["safety_critical_changes"]:
             st.markdown('<div class="sec-head" style="margin-top:.5rem">Flagged changes '
