@@ -8,17 +8,26 @@ rankings are merged with reciprocal rank fusion.
 import os
 import pickle
 
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
 from langchain_ollama import OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from rank_bm25 import BM25Okapi
+
+from . import KEEP_ALIVE
+from .doc_diff import extract_text
+
+# (file, reason) for each document the last build could not index. Surfaced in the
+# console: a skipped SOP means answers silently lack it, which an operator must know.
+last_skipped: list[tuple[str, str]] = []
 
 
 def _embeddings():
     return OllamaEmbeddings(
         model=os.getenv("EMBED_MODEL", "nomic-embed-text"),
         base_url=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+        keep_alive=KEEP_ALIVE,
     )
 
 
@@ -27,18 +36,36 @@ def _index_dir():
 
 
 def _load_docs(docs_dir):
-    docs = []
+    """Load every PDF/TXT/MD under docs_dir. One bad file never sinks the index, but
+    it is never dropped silently either — each is recorded in `last_skipped` with a
+    reason. Text files go through doc_diff.extract_text, so Windows "ANSI" and UTF-16
+    SOPs are indexed rather than rejected, exactly as document comparison reads them."""
+    docs, skipped = [], []
     for root, _, files in os.walk(docs_dir):
-        for name in files:
+        for name in sorted(files):
             path = os.path.join(root, name)
             ext = name.lower().rsplit(".", 1)[-1]
+            if ext not in ("pdf", "txt", "md"):
+                continue
             try:
                 if ext == "pdf":
-                    docs.extend(PyPDFLoader(path).load())
-                elif ext in ("txt", "md"):
-                    docs.extend(TextLoader(path, encoding="utf-8").load())
-            except Exception as e:  # one bad file shouldn't sink the whole index
-                print(f"skip {path}: {e}")
+                    # PyPDFLoader, not extract_text: it keeps per-page metadata, which
+                    # is what lets answers cite "SOP-MNT-402 p.3".
+                    pages = [pg for pg in PyPDFLoader(path).load() if pg.page_content.strip()]
+                    if not pages:
+                        raise ValueError("the PDF has no text layer (it looks scanned) — "
+                                         "export a text PDF, or run OCR on it first")
+                    docs.extend(pages)
+                else:
+                    text = extract_text(path)
+                    if text.strip():
+                        docs.append(Document(page_content=text, metadata={"source": path}))
+            except ValueError as e:
+                skipped.append((os.path.relpath(path, docs_dir), str(e)))
+            except Exception:
+                skipped.append((os.path.relpath(path, docs_dir),
+                                "the file is damaged, empty or password-protected"))
+    last_skipped[:] = skipped
     return docs
 
 
@@ -144,3 +171,29 @@ def search(query: str, k: int = 4) -> list[dict]:
         }
         for d in merged
     ]
+
+
+if __name__ == "__main__":  # ponytail: loader self-check — no Ollama needed
+    import shutil
+    import tempfile
+
+    from pypdf import PdfWriter
+
+    d = tempfile.mkdtemp()
+    sop = "SOP-TEST-1\nSafe limit: 15 bar at 40 °C.\n\nIsolate on trip."
+    open(os.path.join(d, "ansi.txt"), "wb").write(sop.replace("\n", "\r\n").encode("cp1252"))
+    open(os.path.join(d, "notepad_unicode.md"), "wb").write(sop.encode("utf-16"))
+    blank = PdfWriter()
+    blank.add_blank_page(width=612, height=792)
+    blank.write(os.path.join(d, "scanned.pdf"))
+    open(os.path.join(d, "damaged.pdf"), "wb").write(b"%PDF-1.4 truncated\x00\xff")
+    open(os.path.join(d, "notes.docx"), "wb").write(b"PK\x03\x04")  # unsupported: ignored, not reported
+
+    docs = _load_docs(d)
+    assert sorted(os.path.basename(x.metadata["source"]) for x in docs) == ["ansi.txt", "notepad_unicode.md"], docs
+    assert all(x.page_content == sop for x in docs), "encoding not normalised for the index"
+    skipped = dict(last_skipped)
+    assert set(skipped) == {"scanned.pdf", "damaged.pdf"}, last_skipped
+    assert "scanned" in skipped["scanned.pdf"] and skipped["damaged.pdf"], last_skipped
+    shutil.rmtree(d)
+    print("rag ok — ANSI/UTF-16 SOPs indexed, scanned and damaged PDFs reported, not silently dropped")

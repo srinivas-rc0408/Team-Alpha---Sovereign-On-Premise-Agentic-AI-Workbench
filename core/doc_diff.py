@@ -9,14 +9,50 @@ import re
 
 from langchain_ollama import ChatOllama
 
+from . import KEEP_ALIVE
 
-def _extract_text(path: str) -> str:
-    ext = path.lower().rsplit(".", 1)[-1]
-    if ext == "pdf":
+
+def extract_text(path: str) -> str:
+    """A document's text, normalised so a re-save never looks like an edit.
+
+    Plant SOPs arrive as Word's UTF-8-with-BOM, Notepad's "ANSI" (Windows-1252) or
+    "Unicode" (UTF-16), with CRLF or LF endings. Decoding UTF-8 strictly rejected
+    the ANSI files outright, and a stray BOM or CRLF made an unchanged section read
+    as modified. Shared with the RAG loader so the knowledge base reads the same way.
+
+    Raises ValueError, with an operator-readable reason, for anything that can't be
+    read as a document — including a scanned PDF with no text layer, which would
+    otherwise compare as "no differences" however much actually changed.
+    """
+    if path.lower().endswith(".pdf"):
         from pypdf import PdfReader
-        return "\n".join(p.extract_text() or "" for p in PdfReader(path).pages)
-    with open(path, encoding="utf-8") as f:
-        return f.read()
+        from pypdf.errors import PyPdfError
+        try:
+            text = "\n".join(page.extract_text() or "" for page in PdfReader(path).pages)
+        except (PyPdfError, OSError, ValueError, KeyError, TypeError) as e:
+            raise ValueError("the PDF is damaged, empty or password-protected") from e
+        if not text.strip():
+            raise ValueError("the PDF has no text layer (it looks scanned) — "
+                             "export a text PDF, or run OCR on it first")
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    with open(path, "rb") as f:
+        raw = f.read()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = raw.decode("utf-16")
+    elif b"\x00" in raw:
+        raise ValueError("it's a binary file, not a text document")
+    else:
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            # cp1252 first: it's what Windows "ANSI" really is, and it maps the
+            # 0x80-0x9F range (curly quotes, en dashes) that latin-1 turns to junk.
+            try:
+                text = raw.decode("cp1252")
+            except UnicodeDecodeError:
+                text = raw.decode("latin-1")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _sections(text: str) -> list[str]:
@@ -28,8 +64,8 @@ def _sections(text: str) -> list[str]:
 def diff_documents(old_path: str, new_path: str) -> dict:
     """Section-level diff between two document revisions. Returns
     {"added": [...], "removed": [...], "modified": [{"old": ..., "new": ...}]}."""
-    old_secs = _sections(_extract_text(old_path))
-    new_secs = _sections(_extract_text(new_path))
+    old_secs = _sections(extract_text(old_path))
+    new_secs = _sections(extract_text(new_path))
     sm = difflib.SequenceMatcher(None, old_secs, new_secs)
 
     added, removed, modified = [], [], []
@@ -70,9 +106,15 @@ def diff_documents(old_path: str, new_path: str) -> dict:
 # shutdown/trip/SIL concept outright, or pairs a measured quantity with a limit
 # word. ponytail: keyword heuristic, not a parser — it over-flags rather than
 # under-flags on purpose; swap for a tagged-SOP schema if plants start supplying one.
-_STANDALONE = r"\bsil\s*-?\s*[0-4]\b|\bshutdown\b|\btrip\b|\bemergency\b|\bisolat"
+_STANDALONE = (r"\bsil\s*-?\s*[0-4]\b|\bshutdown\b|\btrip\b|\bemergency\b|\bisolat"
+               r"|\bh2s\b|\bhydrogen\s+sulfide\b")
 _SAFETY_TOPICS = r"\b(pressure|temperature|temp|vibration|thickness|flow|level|psi|bar|°c|deg\s*c|mm/s|mm)\b"
-_LIMIT_WORDS = r"\b(limit|max|maximum|min|minimum|setpoint|set\s*point|threshold|alarm|interval|allowable|rating)\b"
+# Frequency words count as limits: "verified quarterly" -> "annually" relaxes an
+# inspection interval exactly as 15 -> 17 bar relaxes a pressure limit, but has no
+# digit in it, so the number-only checks below missed it entirely.
+_FREQUENCY = r"daily|weekly|fortnightly|monthly|quarterly|annually|annual|yearly|biennially|biennial"
+_LIMIT_WORDS = (r"\b(limit|max|maximum|min|minimum|setpoint|set\s*point|threshold|alarm|interval"
+                rf"|allowable|rating|frequency|{_FREQUENCY})\b")
 
 
 def _is_safety_critical(text: str) -> bool:
@@ -83,7 +125,9 @@ def _is_safety_critical(text: str) -> bool:
 
 
 def _numbers(text: str) -> list[str]:
-    return re.findall(r"\d+(?:\.\d+)?", text)
+    """The quantities on a line: numbers, plus inspection frequencies, which are
+    thresholds written as words."""
+    return re.findall(rf"\d+(?:\.\d+)?|\b(?:{_FREQUENCY})\b", text.lower())
 
 
 def _section_label(section: str) -> str:
@@ -92,7 +136,12 @@ def _section_label(section: str) -> str:
 
 
 def _critical_lines(section: str) -> list[str]:
-    return [ln.strip() for ln in section.splitlines() if ln.strip() and _is_safety_critical(ln)]
+    """Safety-critical body lines. The first line is the section's label (already
+    reported as `section`), so it's skipped when there's a body — otherwise a
+    heading like "H2S monitoring" double-counts its own section."""
+    lines = [ln.strip() for ln in section.splitlines() if ln.strip()]
+    body = lines[1:] or lines
+    return [ln for ln in body if _is_safety_critical(ln)]
 
 
 def _flag_modified(old: str, new: str) -> list[dict]:
@@ -150,26 +199,31 @@ def compare_documents(old_path: str, new_path: str, summarize: bool = True) -> d
     if not changes_count:
         summary = "No differences detected between the two documents."
     elif summarize:
-        summary = diff_report(old_path, new_path)
+        summary = diff_report(old_path, new_path, d)
     else:
         summary = (f"{changes_count} section change(s): {len(d['added'])} added, "
                    f"{len(d['removed'])} removed, {len(d['modified'])} modified; "
                    f"{len(flags)} safety-critical line(s) flagged.")
-    return {"changes_count": changes_count, "safety_critical_changes": flags, "summary": summary}
+    # "diff" rides along so callers render sections from this same read — the UI
+    # used to call diff_documents() itself, parsing every PDF a third time.
+    return {"changes_count": changes_count, "safety_critical_changes": flags,
+            "summary": summary, "diff": d}
 
 
 def _llm():
     return ChatOllama(
         model=os.getenv("LLM_MODEL", "qwen2.5:7b"),
         base_url=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+        keep_alive=KEEP_ALIVE,
         temperature=0,
     )
 
 
-def diff_report(old_path: str, new_path: str) -> str:
+def diff_report(old_path: str, new_path: str, d: dict = None) -> str:
     """diff_documents() plus a plain-language summary that flags safety-critical
-    changes and whether they look like they need Management of Change review."""
-    d = diff_documents(old_path, new_path)
+    changes and whether they look like they need Management of Change review.
+    Pass `d` when the diff is already computed, so the documents aren't re-read."""
+    d = d or diff_documents(old_path, new_path)
     if not (d["added"] or d["removed"] or d["modified"]):
         return "No differences detected between the two documents."
 
@@ -216,6 +270,60 @@ if __name__ == "__main__":  # ponytail: self-check — a pure-diffing test, no L
                for f in high), report["safety_critical_changes"]
     assert not _is_safety_critical("Unrelated text.")
 
+    # Relaxing an inspection interval is a threshold move even with no digits in it.
+    insp_old = "Wall thickness must be verified quarterly by ultrasonic testing."
+    insp_new = "Wall thickness must be verified annually by ultrasonic testing."
+    assert _is_safety_critical(insp_old)
+    insp = _flag_modified("Section 3 Inspection\n" + insp_old, "Section 3 Inspection\n" + insp_new)
+    assert [f["risk_level"] for f in insp] == ["HIGH"], insp
+    # Toxic-gas controls are safety-critical on their own, with no limit word needed.
+    assert _is_safety_critical("Personal H2S monitors are mandatory within 10 m of the vessel.")
+    assert not _is_safety_critical("Keep walkways clear of hoses and loose tools.")
+    # A heading that merely names the topic is the section label, not a second change.
+    assert _critical_lines("Section 5 H2S monitoring\nPersonal H2S monitors are mandatory.") == [
+        "Personal H2S monitors are mandatory."]
+    # ...but a one-line section is all body, and must still be flagged.
+    assert _critical_lines("Trip the pump on high vibration.") == ["Trip the pump on high vibration."]
+
     os.remove(old)
     os.remove(new)
-    print("doc_diff ok — sections diffed, safety-critical limit change flagged HIGH")
+
+    # Real plant documents: Windows "ANSI" exports, Word's UTF-8 BOM, CRLF endings,
+    # Notepad's "Unicode" (UTF-16). Each must read as the same text, or a re-save
+    # alone shows up as a changed section.
+    body = "Section 1\nSafe limit: 15 bar at 40 °C.\n\nSection 2\nIsolate on trip."
+    enc_dir = tempfile.mkdtemp()
+    variants = {
+        "utf8.txt": body.encode("utf-8"),
+        "bom.txt": body.encode("utf-8-sig"),
+        "crlf.txt": body.replace("\n", "\r\n").encode("utf-8"),
+        "ansi.txt": body.replace("\n", "\r\n").encode("cp1252"),
+        "utf16.txt": body.encode("utf-16"),
+    }
+    for name, raw in variants.items():
+        open(os.path.join(enc_dir, name), "wb").write(raw)
+        assert extract_text(os.path.join(enc_dir, name)) == body, name
+    base = os.path.join(enc_dir, "utf8.txt")
+    for name in variants:
+        r = compare_documents(base, os.path.join(enc_dir, name), summarize=False)
+        assert r["changes_count"] == 0, f"{name} re-save reported as a change"
+
+    # Unreadable inputs raise ValueError with a reason, never a library-specific error.
+    open(os.path.join(enc_dir, "bin.txt"), "wb").write(b"\x7fELF\x00\x01\x02binary")
+    from pypdf import PdfWriter
+    blank = PdfWriter()
+    blank.add_blank_page(width=612, height=792)
+    blank.write(os.path.join(enc_dir, "scan.pdf"))                       # image-only / scanned
+    open(os.path.join(enc_dir, "junk.pdf"), "wb").write(b"%PDF-1.4 truncated\x00\xff")
+    open(os.path.join(enc_dir, "empty.pdf"), "wb").write(b"")
+    for name in ("bin.txt", "scan.pdf", "junk.pdf", "empty.pdf"):
+        try:
+            extract_text(os.path.join(enc_dir, name))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{name} did not raise ValueError")
+    import shutil
+    shutil.rmtree(enc_dir)
+
+    print("doc_diff ok — sections diffed, safety-critical limit change flagged HIGH, encodings normalised")

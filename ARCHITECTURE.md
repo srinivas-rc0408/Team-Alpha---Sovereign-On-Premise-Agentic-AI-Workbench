@@ -202,6 +202,36 @@ an unverified constant from training data, "deterministic" would just mean
 `safe_limit`/`critical_limit` as arguments; the actual regulatory numbers
 come from the plant's own documents via RAG, not from the model's memory.
 
+## Keeping the limit and the verdict out of the LLM's hands
+
+Taking limits as arguments only helps if the argument is trustworthy, and the
+planner LLM will invent a threshold even when the prompt forbids it (observed:
+an 18.4 bar reading paired with a fabricated `safe_limit` of 20, flipping a
+real CRITICAL to NORMAL). So when `config/safety_limits.json` has an
+operator-verified number for the check type, `safety_check_node` overwrites
+whatever the LLM extracted — config wins, and the LLM's value is used only
+where config is silent.
+
+That fixes the verdict but not what the operator reads. The answering LLM sees
+the question too, so it kept narrating the *question's* limit alongside the
+corrected verdict ("18.4 bar is below the safe limit of 20 bar" under a
+CRITICAL status). Two things close that gap:
+
+- `safety_check_node` returns `safety_input` — the limits the verdict was
+  actually computed against, plus the config `source` citation — so the
+  answering prompt carries the authoritative numbers, not just the status.
+- The verdict line at the top of every safety answer is **built in code**, not
+  written by the model. Asked to restate the machine fields itself, the model
+  mangled them (copying the query's `safe_limit` of 10 next to a NORMAL verdict
+  computed against the verified 15). A wrong number in the first line an
+  operator reads is exactly the failure this gate exists to prevent, so the
+  model is told to explain the reading and next steps and to leave the status,
+  action and numbers alone.
+
+One related prompt rule, learned the same way: these directives live in the
+instruction block, never among the facts in `CONTEXT`. Placed among the facts,
+the model echoed them back verbatim into the operator's answer.
+
 ## Hardware and measured performance
 
 - **Machine:** i7-11800H, RTX 3050 Ti (4GB VRAM), 16GB RAM, Arch Linux.

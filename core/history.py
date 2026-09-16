@@ -35,7 +35,10 @@ from . import audit
 # whitelist-validated rather than sanitised — no traversal shape can survive this.
 _ID_RE = re.compile(r"^\d{8}T\d{6}_[0-9a-f]{8}$")
 
-_STEP_KEYS = ("plan", "vision", "context", "calc", "safety", "reflection", "answer")
+# safety_input rides along with the verdict: the console renders the limits and
+# SOP citation a verdict was computed against, so a reloaded run has to show the
+# same numbers rather than falling back to whatever the query claimed.
+_STEP_KEYS = ("plan", "vision", "context", "calc", "safety", "safety_input", "reflection", "answer")
 
 _CRITICAL = {"CRITICAL", "EXCEEDS", "BELOW_MINIMUM"}
 _WARNING = {"CAUTION"}
@@ -182,9 +185,16 @@ def load_session(chat_id: str) -> dict | None:
         return None
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
+            session = json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
+    # Callers render this directly (session["entries"], session["title"]), so a file
+    # that parses but isn't a session is treated exactly like one that doesn't parse.
+    if not (isinstance(session, dict) and isinstance(session.get("entries"), list)):
+        return None
+    session.setdefault("id", chat_id)
+    session.setdefault("title", "Untitled chat")
+    return session
 
 
 def delete_session(chat_id: str) -> bool:
@@ -215,15 +225,26 @@ def _summary(session: dict) -> dict:
     }
 
 
+_SUMMARY_KEYS = ("id", "title", "updated_at", "entry_count")
+
+
+def _valid_summary(item) -> bool:
+    """The sidebar indexes these keys on every render; one malformed item used to
+    take the whole console down, so nothing reaches it unchecked."""
+    return (isinstance(item, dict) and all(k in item for k in _SUMMARY_KEYS)
+            and isinstance(item["id"], str) and bool(_ID_RE.match(item["id"])))
+
+
 def _read_index() -> list[dict] | None:
     try:
         with open(_index_path(), encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, dict) and isinstance(data.get("sessions"), list):
+        if (isinstance(data, dict) and isinstance(data.get("sessions"), list)
+                and all(_valid_summary(i) for i in data["sessions"])):
             return data["sessions"]
-    except (json.JSONDecodeError, OSError, TypeError):
+    except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError):
         pass
-    return None  # missing or corrupt — caller rebuilds from the session files
+    return None  # missing, corrupt or malformed — caller rebuilds from the session files
 
 
 def _write_index(sessions: list[dict]) -> None:
@@ -241,9 +262,20 @@ def rebuild_index() -> list[dict]:
                 continue
             try:
                 with open(os.path.join(directory, name), encoding="utf-8") as f:
-                    summaries.append(_summary(json.load(f)))
-            except (json.JSONDecodeError, KeyError, OSError):
+                    session = json.load(f)
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 continue  # one corrupt session must not hide the rest
+            # The id inside must be valid AND match the filename: a session is loaded
+            # by id, so a mismatch would list a chat that can never be opened, and an
+            # invalid id would trip the traversal guard mid-render.
+            if not isinstance(session, dict) or session.get("id") != name[:-len(".json")]:
+                continue
+            try:
+                summary = _summary(session)
+            except (KeyError, TypeError, AttributeError):
+                continue
+            if _valid_summary(summary):
+                summaries.append(summary)
     _write_index(summaries)
     return sorted(summaries, key=lambda s: s["updated_at"], reverse=True)
 
@@ -435,6 +467,28 @@ if __name__ == "__main__":  # ponytail: self-check — round-trip, index, search
             pass
         else:
             raise AssertionError(f"traversal guard missed {bad!r}")
+
+    # Anything that reaches the sidebar must be a well-formed summary with a valid id:
+    # the UI indexes chat["id"], chat["title"], chat["updated_at"] on every render.
+    ids = [c["id"] for c in list_sessions()]
+    d = chats_dir()
+    open(os.path.join(d, "20260916T000000_aaaaaaaa.json"), "w").write("[1, 2]")          # JSON, wrong shape
+    json.dump({"id": "../evil", "title": "x", "entries": []},
+              open(os.path.join(d, "20260916T000000_bbbbbbbb.json"), "w"))              # hostile id inside
+    json.dump({"id": "20260916T000000_dddddddd", "title": "x", "entries": []},
+              open(os.path.join(d, "20260916T000000_cccccccc.json"), "w"))              # id != filename
+    json.dump({"id": "stray", "title": "x"}, open(os.path.join(d, "notes.json"), "w"))  # stray file
+    assert [c["id"] for c in rebuild_index()] == ids, "malformed session files leaked into the index"
+    _write_atomic(_index_path(), {"version": 1, "sessions": [{"title": "no id"}, {"id": "../x"}, "junk"]})
+    assert [c["id"] for c in list_sessions()] == ids, "malformed index items reached the UI"
+    # load_session hands its result straight to the UI, which reads session["entries"].
+    assert load_session("20260916T000000_aaaaaaaa") is None, "non-dict session returned"
+    open(os.path.join(d, "20260916T000000_eeeeeeee.json"), "wb").write(b"\xff\xfe\x00garbage")
+    assert load_session("20260916T000000_eeeeeeee") is None, "binary garbage raised"
+    os.remove(os.path.join(d, "20260916T000000_eeeeeeee.json"))
+    for name in ("20260916T000000_aaaaaaaa.json", "20260916T000000_bbbbbbbb.json",
+                 "20260916T000000_cccccccc.json", "notes.json"):
+        os.remove(os.path.join(d, name))
 
     assert delete_session(s["id"]) and not delete_session(s["id"])
     assert list_sessions() == []

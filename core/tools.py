@@ -8,6 +8,7 @@ import tempfile
 
 import ollama
 
+from . import KEEP_ALIVE
 from .rag import search as _rag_search
 
 VISION_PROMPT = (
@@ -34,6 +35,7 @@ def vision(image_path: str, prompt: str = VISION_PROMPT) -> str:
         model=os.getenv("VISION_MODEL", "qwen2.5vl:3b"),
         prompt=prompt,
         images=[image_path],
+        keep_alive=KEEP_ALIVE,
     )
     return resp["response"].strip()
 
