@@ -10,10 +10,63 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from core import agent, audit, doc_diff, history, offline_check, rag
 
 st.set_page_config(page_title="Aegis — Refinery AI", page_icon="🛡️", layout="wide")
+
+# Streamlit's built-in "connection lost" dialog reads: "Streamlit server is not
+# responding. Are you connected to the internet?" — which is exactly backwards
+# for an air-gapped product: losing the connection means the LOCAL server was
+# stopped (window closed / Ctrl+C), never an internet problem, and telling an
+# operator to check their internet undermines the whole guarantee. That text is
+# baked into Streamlit's frontend with no Python setting, so we rewrite it in the
+# DOM. The observer is installed from a 0-height helper iframe (same-origin, so it
+# can reach window.parent) and keeps running after the socket drops, so it still
+# catches the dialog when it appears. Guarded so repeated reruns install it once.
+_CONNECTION_MESSAGE_FIX = """
+<script>
+(function () {
+  try {
+    var doc = window.parent.document;
+    if (!doc || doc.__aegisConnFix) return;
+    doc.__aegisConnFix = true;
+    var MAP = [
+      ["Streamlit server is not responding. Are you connected to the internet?",
+       "The AEGIS server isn't running. Restart it with run.bat (Windows) or ./run.sh — AEGIS never uses the internet."],
+      ["Are you connected to the internet?",
+       "AEGIS runs 100% offline, so this is never an internet problem."],
+      ["Streamlit server is not responding.",
+       "The AEGIS server isn't running \\u2014 restart it with run.bat or ./run.sh."],
+      ["Connection error", "AEGIS server offline"]
+    ];
+    function fixNode(node) {
+      if (node.nodeType === 3) {
+        var v = node.nodeValue;
+        if (!v) return;
+        for (var i = 0; i < MAP.length; i++) {
+          if (v.indexOf(MAP[i][0]) !== -1) { v = v.split(MAP[i][0]).join(MAP[i][1]); }
+        }
+        if (v !== node.nodeValue) node.nodeValue = v;
+      } else if (node.nodeType === 1) {
+        var tw = doc.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
+        var t; while ((t = tw.nextNode())) fixNode(t);
+      }
+    }
+    fixNode(doc.body);
+    new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var m = muts[i];
+        if (m.type === 'characterData') fixNode(m.target);
+        for (var j = 0; j < m.addedNodes.length; j++) fixNode(m.addedNodes[j]);
+      }
+    }).observe(doc.body, { childList: true, subtree: true, characterData: true });
+  } catch (e) { /* can't reach parent doc: leave Streamlit's default text */ }
+})();
+</script>
+"""
+components.html(_CONNECTION_MESSAGE_FIX, height=0)
 
 NAVY, TEAL, ORANGE = "#1B2A38", "#0E7C86", "#E8590C"
 
@@ -89,6 +142,21 @@ def _load_session(chat_id: str):
         st.session_state["step_times"] = last.get("timing", {})
         st.session_state["restored_from"] = session["title"]
     st.session_state["signed_off"] = False
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _docker_available() -> bool:
+    """Is a Docker daemon reachable for the sandboxed calculator? Cached for 30s
+    because it shells out to `docker info`, and re-running that on every Streamlit
+    rerun (every click and keystroke) adds latency for a status that rarely
+    changes — and can block up to the timeout when the daemon is installed but
+    down. The calc tool falls back to a restricted in-process evaluator either way."""
+    if not shutil.which("docker"):
+        return False
+    try:
+        return subprocess.run(["docker", "info"], capture_output=True, timeout=3).returncode == 0
+    except Exception:
+        return False
 
 
 # ─────────────────────────────── sidebar ───────────────────────────────
@@ -201,10 +269,7 @@ with st.sidebar:
     ok, n = audit.verify()
     st.metric("Audit entries", n)
     st.write("Chain integrity:", "✅ intact" if ok else "❌ TAMPERED")
-    docker_up = bool(shutil.which("docker")) and subprocess.run(
-        ["docker", "info"], capture_output=True, timeout=3
-    ).returncode == 0
-    st.write("Docker (network=none):", "✅ available" if docker_up else "⚠️ in-process eval fallback")
+    st.write("Docker (network=none):", "✅ available" if _docker_available() else "⚠️ in-process eval fallback")
     st.caption(f"Chats stored in `{history.chats_dir()}`")
 
 # ─────────────────────────────── main ───────────────────────────────

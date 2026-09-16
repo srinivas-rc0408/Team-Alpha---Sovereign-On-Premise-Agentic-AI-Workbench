@@ -1,4 +1,4 @@
-# AEGIS one-time setup for Windows (PowerShell 5.1+).
+﻿# AEGIS one-time setup for Windows (PowerShell 5.1+).
 #
 # This is the ONLY step that needs internet: it installs Ollama if missing and
 # pulls ~6.5GB of model weights. Everything after this runs fully offline.
@@ -29,7 +29,7 @@ function Stop-Install {
     Write-Host ""
     Write-Host "ERROR at step $script:StepNo : $Problem" -ForegroundColor Red
     if ($Fix) { Write-Host "Fix: $Fix" -ForegroundColor Yellow }
-    Write-Host "Nothing was left half-installed — fix the above and re-run .\install.ps1;" -ForegroundColor Yellow
+    Write-Host "Nothing was left half-installed - fix the above and re-run .\install.ps1;" -ForegroundColor Yellow
     Write-Host "completed steps are skipped automatically." -ForegroundColor Yellow
     Write-Host ""
     exit 1

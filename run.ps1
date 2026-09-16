@@ -1,4 +1,4 @@
-# Start AEGIS on Windows. Fully offline: the only thing this contacts is the
+﻿# Start AEGIS on Windows. Fully offline: the only thing this contacts is the
 # Ollama daemon on this machine. Run .\install.ps1 once first.
 #
 #   powershell -ExecutionPolicy Bypass -File .\run.ps1
@@ -56,10 +56,11 @@ if (Test-OllamaUp) {
 # here everything must hold with the network unplugged, so prove it before
 # opening the console rather than claiming it in the UI afterwards.
 #
-# Single-quoted here-string (@'...'@): PowerShell performs NO interpolation and NO
-# escaping inside it, so the Python below reaches the interpreter byte for byte.
-# A double-quoted @"..."@ would try to expand anything with a '$' in it.
-$offlineCheck = @'
+# Written to a temp .py file rather than passed via `-c`: Windows PowerShell's
+# native-argument quoting mangles a multi-line string containing embedded double
+# quotes (a trailing quote/paren gets dropped), which silently truncates a `-c`
+# script but never a file path - a file is one argument, no escaping involved.
+$offlineCheckScript = @'
 from core import offline_check
 try:
     r = offline_check.assert_offline()
@@ -73,8 +74,25 @@ for w in r.get("warnings", []):
 print(f"  [OK] offline verified - 0 external connections, "
       f"{r['queries_audited']} past queries audited clean")
 '@
-& $py -c $offlineCheck
-if ($LASTEXITCODE -ne 0) { Stop-Run "offline verification failed - refusing to start." "See the failing check above." }
+$offlineCheckPath = Join-Path $env:TEMP "aegis_offline_check_$PID.py"
+Set-Content -Path $offlineCheckPath -Value $offlineCheckScript -Encoding UTF8
+# Running a .py FILE (rather than -c) puts the file's own directory on sys.path[0],
+# not this project's root, so `from core import ...` would fail from a temp
+# directory - point PYTHONPATH at the project root for just this one call.
+$prevPythonPath = $env:PYTHONPATH
+try {
+    $env:PYTHONPATH = $PSScriptRoot
+    & $py $offlineCheckPath
+    $offlineCheckExit = $LASTEXITCODE
+} finally {
+    $env:PYTHONPATH = $prevPythonPath
+    # [System.IO.File]::Delete rather than Remove-Item: on some Windows setups the
+    # Remove-Item cmdlet itself fails to resolve a %TEMP% path built on an 8.3
+    # short name (e.g. "ROCODE~1"), even with -LiteralPath; .NET's own delete
+    # doesn't go through that same path-resolution layer.
+    try { [System.IO.File]::Delete($offlineCheckPath) } catch { }
+}
+if ($offlineCheckExit -ne 0) { Stop-Run "offline verification failed - refusing to start." "See the failing check above." }
 
 # -- Index -------------------------------------------------------------------
 if (-not (Test-Path 'data\embeddings\index.faiss')) {

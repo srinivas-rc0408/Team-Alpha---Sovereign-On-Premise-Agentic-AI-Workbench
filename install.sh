@@ -8,7 +8,10 @@
 #
 set -euo pipefail
 
-cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+# dirname+pwd rather than `readlink -f`: stock macOS/BSD readlink has no -f flag,
+# so that idiom silently resolves to "." there and can run the installer against
+# the wrong directory.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODELS=(qwen2.5:7b moondream nomic-embed-text)
 STEPS=10
