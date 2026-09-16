@@ -49,40 +49,60 @@ RTX 3050 Ti (4GB), 16GB RAM, Arch Linux — roughly 10–60s per query.
 
 ## Install
 
+Two steps on every platform: **set up once** (needs internet — pulls the AI
+models), then **run** (offline, forever). Setup is safe to re-run; it skips
+anything already done, so an interrupted download just resumes.
+
+### 🪟 Windows
+
+Download the zip, unzip it, and **double-click `install.bat`, then `run.bat`.**
+That's the whole thing — no terminal, no flags.
+
+Prefer a terminal?
+
+```powershell
+Expand-Archive aegis.zip -DestinationPath aegis
+cd aegis
+.\install.bat
+.\run.bat
+```
+
+> `install.bat` / `run.bat` are thin wrappers that call the PowerShell scripts
+> with the right execution-policy flag for you, so a first-time user never has
+> to know PowerShell exists. Advanced users can still call
+> `powershell -ExecutionPolicy Bypass -File .\install.ps1` directly, and
+> `run.bat -Port 8502` passes options straight through.
+
 ### 🐧 Linux / 🍎 macOS
 
 ```bash
-unzip aegis.zip && cd aegis
+unzip aegis.zip -d aegis && cd aegis
 chmod +x install.sh run.sh
 ./install.sh
 ./run.sh
 ```
 
-### 🪟 Windows (PowerShell)
+Prefer `make`? `make install`, `make run`, `make test`, `make index`,
+`make clean`, `make reset-chats` (`make help` lists them).
 
-```powershell
-Expand-Archive aegis.zip -DestinationPath .
-cd aegis
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-powershell -ExecutionPolicy Bypass -File .\run.ps1
-```
+---
 
-> If PowerShell blocks the scripts, the `-ExecutionPolicy Bypass` prefix above
-> is what allows them to run for that one command without changing any
-> machine-wide setting. Once allowed, `.\install.ps1` and `.\run.ps1` work directly.
+**Don't have Ollama yet?** You don't need to install anything by hand — the
+setup script installs it for you (via the official installer on Windows, the
+official script on Linux, Homebrew or the official installer on macOS). If you'd
+rather install it yourself first, get it from **https://ollama.com/download**;
+the script detects it and skips ahead.
 
-Then open **http://127.0.0.1:8501** (the launcher opens it for you).
+Once setup finishes, open **http://127.0.0.1:8501** — the launcher opens your
+browser there automatically.
 
-Prefer `make`? On Linux/macOS: `make install`, `make run`, `make test`,
-`make index`, `make clean`, `make reset-chats` (`make help` lists them).
+### What each step actually does
 
-### What each command actually does
-
-| Command | In plain English |
+| Step | In plain English |
 |---|---|
-| `chmod +x install.sh run.sh` | Marks the two scripts as runnable. Zip files don't preserve the executable bit, so this is needed once. (Not needed on Windows.) |
-| `install.sh` / `install.ps1` | Detects your OS, installs Ollama if you don't have it, starts it, downloads the three AI models, creates an isolated Python environment, installs the Python libraries, creates the local storage folders, copies `.env.example` to `.env`, reads your documents in `docs/` into a searchable index, and runs the test suite to prove it all works. **Safe to re-run** — anything already done is skipped, so a failed download resumes instead of restarting. |
-| `run.sh` / `run.ps1` | Starts the app: activates the Python environment, makes sure Ollama is running, **verifies nothing can reach the internet and refuses to start if it can**, builds the index if missing, opens your browser, and serves the console on `127.0.0.1:8501`. |
+| `chmod +x install.sh run.sh` | Marks the two scripts as runnable. Zip files don't preserve the executable bit, so this is needed once. (Windows doesn't need it — use the `.bat` files.) |
+| **Setup** (`install.bat` / `install.sh`) | Detects your OS, installs Ollama if you don't have it, starts it, downloads the three AI models, creates an isolated Python environment, installs the Python libraries, creates the local storage folders, copies `.env.example` to `.env`, reads your documents in `docs/` into a searchable index, and runs the test suite to prove it all works. **Safe to re-run** — anything already done is skipped, so a failed download resumes instead of restarting. |
+| **Run** (`run.bat` / `run.sh`) | Starts the app: activates the Python environment, makes sure Ollama is running, **verifies nothing can reach the internet and refuses to start if it can**, builds the index if missing, opens your browser, and serves the console on `127.0.0.1:8501`. |
 
 ---
 
@@ -220,7 +240,8 @@ install, which downloads the weights from `ollama.com`. Nothing else, ever.
 
 | Symptom | Fix |
 |---|---|
-| `…install.ps1 cannot be loaded because running scripts is disabled` | Use `powershell -ExecutionPolicy Bypass -File .\install.ps1`, or run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once. |
+| `…install.ps1 cannot be loaded because running scripts is disabled` | Use the `.bat` launchers (`install.bat` / `run.bat`) — they set the policy for that one run. Or call `powershell -ExecutionPolicy Bypass -File .\install.ps1` directly. |
+| Double-clicking `install.ps1` opens Notepad | That's expected — Windows edits `.ps1` on double-click. Double-click **`install.bat`** instead. |
 | `ollama: command not found` right after installing it | Close PowerShell, open a **new** window (so PATH refreshes), re-run `.\install.ps1`. |
 | Python opens the Microsoft Store | The Store stub is on PATH. Install real Python: `winget install Python.Python.3.12`, tick *Add python.exe to PATH*, open a new window. |
 | `port 8501 is already in use` | `.\run.ps1 -Port 8502`, or stop the other process. |
@@ -252,6 +273,7 @@ CRITICAL/EXCEEDS/BELOW_MINIMUM verdict.
 ## Project layout
 
 ```
+install.bat / run.bat     — Windows double-click launchers (wrap the .ps1 scripts)
 install.sh / install.ps1  — one-time setup (the only step needing internet)
 run.sh     / run.ps1      — start the app (fully offline; verifies before launching)
 Makefile                  — install / run / test / index / clean / reset-chats
