@@ -270,6 +270,14 @@ and retrieved SOP text — the prompt explicitly forbids inventing a threshold);
 extraction can point at the wrong check, but it can never talk its way past a
 CRITICAL/EXCEEDS/BELOW_MINIMUM verdict.
 
+The prompt forbidding invented thresholds is not enough on its own — the
+planner will still produce one (seen: an 18.4 bar reading paired with a made-up
+20 bar "safe limit"). So limits you put in `config/safety_limits.json` are
+**authoritative**: they overwrite whatever the LLM extracted, and the verdict
+line an operator reads — status, reading, limits, SOP citation — is rendered in
+code rather than written by the model, so the numbers on screen are always the
+numbers the verdict was computed from.
+
 ## Project layout
 
 ```

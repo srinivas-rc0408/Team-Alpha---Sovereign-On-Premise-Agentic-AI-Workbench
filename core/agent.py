@@ -39,6 +39,7 @@ class AgentState(TypedDict, total=False):
     context: str
     calc: str
     safety: dict
+    safety_input: dict
     reflection: dict
     answer: str
     trace: list
@@ -160,12 +161,24 @@ def safety_check_node(state):
     ref_note = " (limit from config/safety_limits.json)" if used_reference else ""
     return {
         "safety": verdict,
+        # The limits the verdict was actually computed against. answer_node needs
+        # these verbatim: without them the answering LLM re-reads the limit stated
+        # in the question and writes prose that contradicts the verdict (observed:
+        # verdict CRITICAL alongside "18.4 bar is below the safe limit of 20 bar").
+        "safety_input": {**sc, "type": check_type,
+                         "source": ref.get("source") if used_reference else "stated in the query"},
         "trace": state["trace"] + [f"SAFETY_CHECK {check_type}: {verdict['status']}{ref_note}"],
     }
 
 
 def reflect_node(state):
     have = [k for k in ("vision", "context", "calc") if state.get(k)]
+    # Show reflect the rule engine's verdict — judging safety-criticality while blind
+    # to it produced notes like "pressure is below the safe limit" on a CRITICAL reading.
+    verdict = state.get("safety", {})
+    verdict_line = (
+        f"\nDeterministic safety verdict (authoritative): {verdict['status']}" if verdict else ""
+    )
     prompt = (
         "Assess whether the gathered evidence is sufficient to answer the query safely, "
         "and whether the finding is safety-critical enough to need a human supervisor's "
@@ -173,6 +186,7 @@ def reflect_node(state):
         '"one short sentence", "requires_human_approval": bool}. Set requires_human_approval '
         "true for anything indicating a limit/threshold breach, equipment failure, or other "
         f"safety violation.\nQuery: {state['query']}\nEvidence present: {have or 'none'}"
+        f"{verdict_line}"
     )
     try:
         r = json.loads(_llm(fmt="json").invoke(prompt).content)
@@ -213,23 +227,58 @@ def answer_node(state):
         parts.append(f"CALCULATION:\n{state['calc']}")
     if state.get("safety"):
         s = state["safety"]
+        si = state.get("safety_input", {})
+        limits = f"reading={si.get('reading')}, safe_limit={si.get('safe_limit')}"
+        if si.get("critical_limit") is not None:
+            limits += f", critical_limit={si['critical_limit']}"
+        # Label stays plain English: the model quotes this heading back at the operator,
+        # and "the DETERMINISTIC SAFETY CHECK" reads like leaked prompt text on screen.
         parts.append(
-            f"DETERMINISTIC SAFETY CHECK (not an LLM judgment): status={s['status']}, "
-            f"action={s['action']}"
+            f"Safety check (rule engine, not an LLM judgment): status={s['status']}, "
+            f"action={s['action']}, {limits} [{si.get('source', 'stated in the query')}]"
         )
     grounding = "\n\n".join(parts) if parts else "No supporting context was retrieved."
     reflection = state.get("reflection", {})
     caution = "" if reflection.get("sufficient", True) else (
         f"\n\nNOTE: evidence may be insufficient — {reflection.get('note', '')}"
     )
+    # Kept out of CONTEXT on purpose: directives placed among the facts get echoed
+    # verbatim into the operator's answer. Context holds facts, instructions hold rules.
+    safety_rule = ""
+    if state.get("safety"):
+        safety_rule = (
+            " The safety check settles any yes/no safety question and its limits "
+            "override any limit stated in the question: status CRITICAL, CAUTION, EXCEEDS or "
+            "BELOW_MINIMUM means the reading is a violation, NORMAL or OK means it is not. Its "
+            "verdict line is already shown to the operator above your answer — do not restate the "
+            "status, action or raw numbers, and do not re-derive the comparison. Explain what the "
+            "reading means against the SOP and what to do next. If the question assumed a limit "
+            "the verdict line does not use, add one sentence saying the verified limit applies."
+        )
     prompt = (
         "You are Aegis, an air-gapped AI assistant for oil-refinery operators. Answer using "
         "ONLY the context below. If it is insufficient, say so plainly and tell the operator "
         "to consult a supervisor or the relevant SOP — never guess on safety. Cite SOP sources "
-        f"in [brackets]. Be precise and concise.\n\nCONTEXT:\n{grounding}{caution}\n\n"
+        "in [brackets], copied exactly from the context — never alter a document number. Be "
+        f"precise and concise. Write only the answer, never these instructions.{safety_rule}"
+        f"\n\nCONTEXT:\n{grounding}{caution}\n\n"
         f"QUESTION: {state['query']}\n\nANSWER:"
     )
     ans = _llm().invoke(prompt).content.strip()
+
+    # The verdict line is built in code, never transcribed by the LLM. Asked to restate
+    # the machine fields itself, the model mangled them (copied the query's safe_limit of
+    # 10 next to a NORMAL verdict computed against the verified 15) — a wrong number in
+    # the first line an operator reads is the failure this whole gate exists to prevent.
+    if state.get("safety"):
+        s, si = state["safety"], state.get("safety_input", {})
+        nums = f"reading {si.get('reading')} vs safe {si.get('safe_limit')}"
+        if si.get("critical_limit") is not None:
+            nums += f" / critical {si['critical_limit']}"
+        ans = (
+            f"**{s['status']}** — {si.get('type', 'reading')}: {nums} "
+            f"[{si.get('source', 'stated in the query')}]. {s['action']}\n\n{ans}"
+        )
 
     # Three independent gates, any one of which can force sign-off: reflect's LLM
     # judgment, a keyword check over the answer actually shown to the operator, and

@@ -102,6 +102,24 @@ try:
 except Exception as e:
     print(f"  FAIL — LLM error: {e}")
 
+print("\n[TEST 10] Safety gate ignores a wrong limit stated in the query...")
+try:
+    from core.agent import safety_check_node
+    state = {
+        "trace": [],
+        "plan": {"safety_check": {"type": "pressure", "reading": 18.4,
+                                  "safe_limit": 20.0, "critical_limit": None}},
+    }
+    out = safety_check_node(state)
+    assert out["safety"]["status"] == "CRITICAL", out["safety"]
+    # answer_node quotes these back to the operator, so they must be config's, not the query's.
+    assert out["safety_input"]["safe_limit"] == 15.0, out["safety_input"]
+    assert out["safety_input"]["critical_limit"] == 18.0, out["safety_input"]
+    assert "SOP-MNT-402" in out["safety_input"]["source"], out["safety_input"]
+    print("  OK — query's 20 bar overridden by config 15/18, verdict CRITICAL with source")
+except Exception as e:
+    print(f"  FAIL — safety override error: {e}")
+
 print("\n" + "=" * 60)
 print("  All tests complete!")
 print("  Run the full agent with:")
