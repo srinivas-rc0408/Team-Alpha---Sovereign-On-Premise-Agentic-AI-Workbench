@@ -1,0 +1,30 @@
+# Streamlit is the only thing in AEGIS that talks to a browser, so its defaults
+# are the one place a stray outbound call could hide. Usage stats off, bound to
+# loopback only — never 0.0.0.0, which would expose the operator console to the
+# plant LAN.
+
+[browser]
+gatherUsageStats = false
+serverAddress = "127.0.0.1"
+
+[server]
+address = "127.0.0.1"
+headless = true
+# Both stay on. Binding to loopback stops the plant LAN reaching the console, but
+# it does NOT stop a page the operator has open in their own browser from calling
+# http://127.0.0.1:8501 cross-origin. With enableCORS=false Streamlit answers
+# 'Access-Control-Allow-Origin: *' and accepts a WebSocket from any origin, which
+# would put the whole chat history one malicious tab away.
+enableCORS = true
+enableXsrfProtection = true
+fileWatcherType = "none"
+
+[global]
+showWarningOnDirectExecution = false
+
+[theme]
+base = "dark"
+primaryColor = "#0E7C86"
+backgroundColor = "#0F1720"
+secondaryBackgroundColor = "#1B2A38"
+textColor = "#E6EDF3"

@@ -1,7 +1,12 @@
 venv/
 __pycache__/
 *.pyc
-data/embeddings/
-logs/*.jsonl
+
+# All local runtime state: FAISS index, chat history, audit trail, scratch files.
+# Operator questions and plant readings live here — they must never reach a remote.
+data/
+logs/
+temp/
+
 .env
 .playwright-mcp/

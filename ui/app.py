@@ -1,4 +1,4 @@
-"""Aegis — Streamlit demo for the air-gapped refinery agent."""
+"""Aegis — Streamlit console for the air-gapped refinery agent."""
 import os
 import shutil
 import subprocess
@@ -11,23 +11,41 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 
-from core import agent, audit, differ, rag
+from core import agent, audit, doc_diff, history, offline_check, rag
 
 st.set_page_config(page_title="Aegis — Refinery AI", page_icon="🛡️", layout="wide")
 
+NAVY, TEAL, ORANGE = "#1B2A38", "#0E7C86", "#E8590C"
+
 st.markdown(
-    """
+    f"""
     <style>
-    .stButton > button[kind="primary"] { background-color: #0070C0; border-color: #0070C0; }
-    .stButton > button[kind="primary"]:hover { background-color: #005a99; border-color: #005a99; }
-    h1 { color: #0070C0; }
+    section[data-testid="stSidebar"] {{ background-color: {NAVY}; }}
+    section[data-testid="stSidebar"] * {{ color: #E6EDF3; }}
+    .aegis-header {{
+        background: {NAVY}; padding: 1.1rem 1.5rem; border-radius: 8px;
+        border-left: 5px solid {ORANGE}; margin-bottom: 1.2rem;
+    }}
+    .aegis-header h1 {{ color: #FFFFFF; margin: 0; font-size: 2.1rem; letter-spacing: .06em; }}
+    .aegis-header p {{ color: #B8C4D0; margin: .25rem 0 0; font-size: .9rem; }}
+    .stButton > button[kind="primary"] {{ background-color: {TEAL}; border-color: {TEAL}; }}
+    .stButton > button[kind="primary"]:hover {{ background-color: #0b626a; border-color: #0b626a; }}
+    .offline-badge {{
+        background: #0d3b2e; color: #7EE7C7; border: 1px solid #1f7a5c;
+        padding: .45rem .6rem; border-radius: 6px; font-size: .82rem; font-weight: 600;
+    }}
+    .offline-badge.leak {{ background: #4a1216; color: #FFB3B8; border-color: #a12d38; }}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.title("🛡️ AEGIS")
-st.caption("Air-gapped Engineering Intelligence System · Team Alpha · SIH26117 · 100% on-premise · zero internet")
+st.markdown(
+    '<div class="aegis-header"><h1>🛡️ AEGIS</h1>'
+    "<p>Team Alpha &nbsp;|&nbsp; SIH26117 &nbsp;|&nbsp; 100% Air-Gapped &nbsp;|&nbsp; "
+    "Air-gapped Engineering Intelligence System</p></div>",
+    unsafe_allow_html=True,
+)
 
 PIPELINE_STEPS = ["plan", "vision", "rag", "calc", "safety_check", "reflect", "answer"]
 STEP_LABELS = {
@@ -35,6 +53,106 @@ STEP_LABELS = {
     "safety_check": "Safety Check", "reflect": "Reflect", "answer": "Answer",
 }
 
+EXAMPLES = [
+    "Pressure reading is 18.4 bar. Safe limit is 15 bar per SOP-402. Is this a violation?",
+    "Vibration on pump P-201 is 8.5 mm/s RMS. Check against SOP limits.",
+    "Wall thickness reading of 5.2mm vs minimum 6.35mm per Section 3.2",
+]
+
+if "session" not in st.session_state:
+    st.session_state["session"] = history.new_session()
+
+
+def _load_session(chat_id: str):
+    """Restore a past session: its last run repopulates the report panes."""
+    session = history.load_chat(chat_id)
+    if not session:
+        st.toast(f"Chat {chat_id} is no longer on disk.")
+        return
+    st.session_state["session"] = session
+    last = session["entries"][-1] if session["entries"] else None
+    if last:
+        st.session_state["result"] = {
+            "query": last["query"],
+            "answer": last["answer"],
+            "safety": last.get("safety"),
+            "requires_approval": last.get("requires_approval", False),
+            "trace": last.get("trace", []),
+            "loop_count": last.get("loop_count", 0),
+            "network_audit": last.get("network_audit"),
+            "context": (last.get("steps") or {}).get("context"),
+        }
+        st.session_state["step_times"] = last.get("timing", {})
+        st.session_state["restored_from"] = session["title"]
+    st.session_state["signed_off"] = False
+
+
+# ─────────────────────────────── sidebar ───────────────────────────────
+with st.sidebar:
+    offline = offline_check.verify_offline()
+    badge_class = "offline-badge" if offline["offline"] else "offline-badge leak"
+    badge_text = (
+        f"🔒 OFFLINE MODE — {len(offline['external_connections'])} external connections"
+        if offline["offline"]
+        else f"⚠️ {len(offline['external_connections'])} EXTERNAL CONNECTION(S) DETECTED"
+    )
+    st.markdown(f'<div class="{badge_class}">{badge_text}</div>', unsafe_allow_html=True)
+    st.caption(f"{offline['queries_audited']} past queries network-audited · all clean"
+               if offline["checks"]["history"]["ok"]
+               else f"⚠️ {offline['checks']['history']['leaking_queries']} past queries leaked")
+    for warning in offline.get("warnings", []):
+        st.caption(f"⚠️ {warning}")
+
+    st.divider()
+    st.header("💬 Chat History")
+    if st.button("➕ New Chat", use_container_width=True):
+        st.session_state["session"] = history.new_session()
+        for key in ("result", "step_times", "signed_off", "restored_from"):
+            st.session_state.pop(key, None)
+        st.rerun()
+
+    keyword = st.text_input("Search history", placeholder="pressure, P-201, SOP-402…")
+    chats = history.search_chats(keyword) if keyword.strip() else history.list_chats()
+
+    current_id = st.session_state["session"]["id"]
+    if not chats:
+        st.caption("No saved chats yet — run a query to start one.")
+    for chat in chats[:40]:
+        marker = "▸ " if chat["id"] == current_id else ""
+        flag = " ⚠️" if chat["requires_approval"] else ""
+        label = f"{marker}{chat['title'][:42]}{flag}"
+        row, delete_col = st.columns([5, 1])
+        if row.button(label, key=f"chat_{chat['id']}", use_container_width=True):
+            _load_session(chat["id"])
+            st.rerun()
+        if delete_col.button("🗑", key=f"del_{chat['id']}", help="Delete this chat"):
+            history.delete_chat(chat["id"])
+            if chat["id"] == current_id:
+                st.session_state["session"] = history.new_session()
+            st.rerun()
+        row.caption(f"{chat['updated_at'][:16].replace('T', ' ')} · {chat['entry_count']} run(s)")
+
+    st.divider()
+    st.header("Knowledge base")
+    if st.button("Rebuild index from docs/"):
+        with st.spinner("Embedding documents locally…"):
+            try:
+                st.success(f"Indexed {rag.build_index()} chunks.")
+            except Exception as e:
+                st.error(str(e))
+
+    st.divider()
+    st.caption("System health")
+    ok, n = audit.verify()
+    st.metric("Audit entries", n)
+    st.write("Chain integrity:", "✅ intact" if ok else "❌ TAMPERED")
+    docker_up = bool(shutil.which("docker")) and subprocess.run(
+        ["docker", "info"], capture_output=True, timeout=3
+    ).returncode == 0
+    st.write("Docker (network=none):", "✅ available" if docker_up else "⚠️ in-process eval fallback")
+    st.caption(f"Chats stored in `{history.chats_dir()}`")
+
+# ─────────────────────────────── main ───────────────────────────────
 with st.expander("ℹ️ How AEGIS works"):
     st.markdown(
         "```\n"
@@ -49,43 +167,23 @@ with st.expander("ℹ️ How AEGIS works"):
         "- **Safety Check** — deterministic code (`core/safety_rules.py`), not an LLM judgment.\n"
         "- **Reflect** — self-critiques the evidence; can loop back to RAG for another pass.\n"
         "- **Answer** — the final response, with three independent gates on the sign-off requirement.\n"
-        "\nEvery step is logged to a SHA-256 hash-chained audit trail, and every query runs a "
-        "network audit proving nothing left the machine."
+        "\nEvery step is logged to a SHA-256 hash-chained audit trail, every query runs a "
+        "network audit proving nothing left the machine, and every run is saved locally to "
+        "`data/chats/`."
     )
-
-with st.sidebar:
-    st.header("Knowledge base")
-    if st.button("Rebuild index from docs/"):
-        with st.spinner("Embedding documents locally…"):
-            try:
-                st.success(f"Indexed {rag.build_index()} chunks.")
-            except Exception as e:
-                st.error(str(e))
-    st.divider()
-    ok, n = audit.verify()
-    st.metric("Audit entries", n)
-    st.write("Chain integrity:", "✅ intact" if ok else "❌ TAMPERED")
-
-    st.divider()
-    st.caption("Sandbox (Python REPL tool)")
-    docker_up = bool(shutil.which("docker")) and subprocess.run(
-        ["docker", "info"], capture_output=True, timeout=3
-    ).returncode == 0
-    st.write("Docker (network=none):", "✅ available" if docker_up else "⚠️ falling back to in-process eval")
 
 tab_ask, tab_compare = st.tabs(["Ask AEGIS", "Document Comparison"])
 
 with tab_ask:
-    EXAMPLES = [
-        "Pressure reading is 18.4 bar. Safe limit is 15 bar, critical limit is 18 bar. Is this a safety violation?",
-        "What is the pressure alarm setpoint for the column top on the crude unit?",
-        "What is the response if column top pressure exceeds 2.0 bar(g)?",
-        "Compare wall thickness: 5mm measured, 6.35mm minimum. Is this acceptable?",
-    ]
+    if st.session_state.get("restored_from"):
+        st.info(f"📂 Restored from history: **{st.session_state['restored_from']}**")
+
     st.caption("Try an example:")
-    cols = st.columns(len(EXAMPLES))
-    for col, ex in zip(cols, EXAMPLES):
-        if col.button(ex[:40] + ("…" if len(ex) > 40 else ""), key=f"ex_{ex[:20]}"):
+    for col, ex in zip(st.columns(len(EXAMPLES)), EXAMPLES):
+        # Streamlit ellipsises the label to the column width, so the full query
+        # goes in the tooltip rather than being unreadable on the button.
+        if col.button(ex[:46] + ("…" if len(ex) > 46 else ""), key=f"ex_{ex[:20]}",
+                      help=ex, use_container_width=True):
             st.session_state["query_input"] = ex
 
     query = st.text_area(
@@ -107,8 +205,8 @@ with tab_ask:
         for step in PIPELINE_STEPS:
             progress_slots[step].markdown(f"⏳ {STEP_LABELS[step]}")
 
-        result = None
-        step_times = {}
+        result, step_times = None, {}
+        cursor = history.audit_cursor()
         try:
             last_t = 0.0
             for node_name, elapsed, state in agent.run_streaming(query, image_path):
@@ -119,15 +217,20 @@ with tab_ask:
                 step_times[node_name] = round(elapsed - last_t, 2)
                 last_t = elapsed
                 if node_name in progress_slots:
-                    progress_slots[node_name].markdown(f"✅ {STEP_LABELS[node_name]} ({step_times[node_name]}s)")
+                    progress_slots[node_name].markdown(
+                        f"✅ {STEP_LABELS[node_name]} ({step_times[node_name]}s)"
+                    )
         except RuntimeError as e:
             st.error(str(e))
-            result = None
 
         if result:
             st.session_state["result"] = result
             st.session_state["step_times"] = step_times
             st.session_state["signed_off"] = False
+            st.session_state.pop("restored_from", None)
+            history.record_run(
+                st.session_state["session"], result, cursor=cursor, timing=step_times
+            )
 
     result = st.session_state.get("result")
     if result:
@@ -187,8 +290,7 @@ with tab_ask:
                 st.text("\n".join(net["connections"]) or "(none)")
 
         with st.expander("Audit hash chain"):
-            entries = audit.read()[-20:]
-            for i, e in enumerate(entries):
+            for i, e in enumerate(audit.read()[-20:]):
                 arrow = "  │\n  ▼\n" if i > 0 else ""
                 st.text(f"{arrow}[{e['event']}] {e['hash'][:12]}… (prev {e['prev_hash'][:12]}…)")
 
@@ -208,17 +310,30 @@ with tab_compare:
 
         with st.spinner("Diffing documents and assessing safety impact…"):
             try:
-                d = differ.diff_documents(old_tmp.name, new_tmp.name)
-                summary = differ.diff_report(old_tmp.name, new_tmp.name)
-                st.session_state["diff_result"] = d
-                st.session_state["diff_summary"] = summary
-            except RuntimeError as e:
+                st.session_state["diff_sections"] = doc_diff.diff_documents(old_tmp.name, new_tmp.name)
+                st.session_state["diff_report"] = doc_diff.compare_documents(old_tmp.name, new_tmp.name)
+            except (RuntimeError, OSError) as e:
                 st.error(str(e))
 
-    d = st.session_state.get("diff_result")
-    if d:
+    d = st.session_state.get("diff_sections")
+    report = st.session_state.get("diff_report")
+    if d and report:
+        c1, c2 = st.columns(2)
+        c1.metric("Sections changed", report["changes_count"])
+        c2.metric("Safety-critical changes", len(report["safety_critical_changes"]))
+
         st.subheader("Safety impact assessment")
-        st.markdown(st.session_state.get("diff_summary", ""))
+        st.markdown(report["summary"])
+
+        if report["safety_critical_changes"]:
+            st.markdown("**Flagged safety-critical changes** (deterministic keyword scan)")
+            for f in report["safety_critical_changes"]:
+                tone = st.error if f["risk_level"] == "HIGH" else st.warning
+                tone(
+                    f"**{f['risk_level']}** · {f['section'] or 'unlabelled section'}\n\n"
+                    f"− {f['old_value'] or '_(not present in old revision)_'}\n\n"
+                    f"\\+ {f['new_value'] or '_(removed in new revision)_'}"
+                )
 
         if d["modified"]:
             st.markdown("**Modified sections**")
@@ -234,8 +349,8 @@ with tab_compare:
             st.markdown("**Added sections**")
             for a in d["added"]:
                 st.markdown(f":green-background[{a}]")
-        if not (d["added"] or d["removed"] or d["modified"]):
+        if not report["changes_count"]:
             st.success("No differences detected.")
 
 st.divider()
-st.caption("Built for SIH 2026 · Problem Statement SIH26117 · Team Alpha")
+st.caption("Built for SIH 2026 · Problem Statement SIH26117 · Team Alpha · all data stored locally")
