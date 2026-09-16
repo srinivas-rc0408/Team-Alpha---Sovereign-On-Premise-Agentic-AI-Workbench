@@ -1,13 +1,27 @@
 # AEGIS — Air-Gapped Engineering Intelligence System
 
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
+![License MIT](https://img.shields.io/badge/license-MIT-green)
+![SIH 2026](https://img.shields.io/badge/SIH-2026-orange)
+![Air-Gapped](https://img.shields.io/badge/network-air--gapped-black)
+![Status](https://img.shields.io/badge/status-prototype-yellow)
+
 SIH26117 · Team Alpha · Sovereign On-Premise Agentic AI Workbench using
 Open-Weight Multimodal LLMs for Confidential Industrial Work.
 
+**What is this?** A LangGraph agent for refinery operators that answers
+questions grounded in internal SOPs, runs verification math in a sandbox, and
+gates safety-critical findings behind a named human sign-off — entirely on
+local Ollama models, with no network dependency at query time.
+
 A local-only agent that answers operator questions ("is this pressure reading a
 violation?") by planning a multi-step job, retrieving grounded SOP context,
-running verification code in an isolated sandbox, and reflecting before it
-answers — with every step written to a tamper-evident audit log. No query,
-document, or model weight ever leaves the machine.
+running verification code in an isolated sandbox, checking any safety
+thresholds with plain deterministic code (never an LLM judgment call), and
+reflecting before it answers — with every step written to a tamper-evident
+audit log. No query, document, or model weight ever leaves the machine; the UI
+binds to `127.0.0.1` only, and a network audit runs on every query to prove it
+(see `core/network_monitor.py`).
 
 ## Quickstart
 
@@ -24,13 +38,32 @@ streamlit run ui/app.py       # the demo UI
 ## Architecture
 
 ```
-Plan → Vision (if image attached) → RAG → Calc → Reflect ──┬─→ Answer
-                    ^                                       │
-                    └───────────── retry (≤2x) ─────────────┘
+Plan → Vision (if image attached) → RAG → Calc → Safety Check → Reflect ──┬─→ Answer
+                    ^                                                     │
+                    └───────────────────── retry (≤2x) ────────────────────┘
 ```
 
 Every node logs to `logs/audit.jsonl` (SHA-256 hash-chained — `audit.verify()`
-finds the first broken link if any past entry is edited).
+finds the first broken link if any past entry is edited). Every `run()` call
+also runs a network audit (`core/network_monitor.py`) over its own process
+tree and logs a `NETWORK_AUDIT` entry — see ARCHITECTURE.md for details.
+
+**Safety check is deterministic, not an LLM judgment.** The planner LLM only
+extracts which check applies and the numbers involved (grounded in the query
+and retrieved SOP text — the prompt explicitly forbids inventing a threshold);
+`core/safety_rules.py`'s plain comparisons decide the verdict. A hallucinated
+extraction can point at the wrong check, but it can never talk its way past a
+CRITICAL/EXCEEDS/BELOW_MINIMUM verdict — that's one of three independent gates
+on `requires_approval` (the others: reflect's own judgment, and a keyword
+backstop over the rendered answer).
+
+## Demo
+
+```
+streamlit run ui/app.py --server.address 127.0.0.1   # loopback only, not LAN-exposed
+```
+
+_Screenshot: see `screenshots/` (placeholder — add one from your run)._
 
 | Deck component | This prototype | Why |
 |---|---|---|
@@ -61,13 +94,15 @@ finds the first broken link if any past entry is edited).
 ## Project layout
 
 ```
-core/agent.py   — LangGraph state machine (plan/vision/rag/calc/reflect/answer)
-core/rag.py     — hybrid FAISS + BM25 retrieval over docs/
-core/tools.py   — vision (moondream), sandboxed calc, RAG search
-core/audit.py   — SHA-256 hash-chained JSONL audit log
-ui/app.py       — Streamlit demo, sign-off gate, audit/sandbox status
-docs/           — SOPs to index (PDF/TXT/MD)
-test_aegis.py   — end-to-end smoke test
+core/agent.py            — LangGraph state machine (plan/vision/rag/calc/safety_check/reflect/answer)
+core/rag.py              — hybrid FAISS + BM25 retrieval over docs/
+core/tools.py            — vision (moondream), sandboxed calc, RAG search
+core/audit.py            — SHA-256 hash-chained JSONL audit log
+core/safety_rules.py     — deterministic pressure/temperature/vibration/wall-thickness checks, no LLM
+core/network_monitor.py  — per-query air-gap audit (external connections, byte counts)
+ui/app.py                — Streamlit demo, sign-off gate, audit/sandbox/network status
+docs/                    — SOPs to index (PDF/TXT/MD)
+test_aegis.py            — end-to-end smoke test
 ```
 
 ## Known gaps vs. the full pitch deck
@@ -75,3 +110,6 @@ test_aegis.py   — end-to-end smoke test
 - No LanceDB, FastAPI/Redis, Next.js/React Flow, or gVisor — see the table above for what stands in for each and why.
 - Vision returns a text description, not structured defect bounding boxes (needs Qwen2.5-VL; only moondream is installed here).
 - Single-user, single-process — no RBAC/multi-tenant plant-DMZ deployment yet.
+- No document-diff/MOC-review tool between SOP revisions — not built.
+- The Streamlit UI is functional but plain: no example-query buttons, live per-step pipeline animation, or dark-blue branding pass — not built.
+- `safety_rules.py`'s vibration/wall-thickness checkers are generic threshold evaluators, not preloaded with ISO 10816-3 (or any other) table values — the limits must come from the query or retrieved SOP text, so the system never asserts an unverified regulatory number as fact.
