@@ -22,9 +22,16 @@ fileWatcherType = "none"
 [global]
 showWarningOnDirectExecution = false
 
+# Mirrors the tokens in ui/app.py. Set here as well as in CSS so Streamlit's own
+# internals — uploader chrome, tooltips, select menus, the running-man indicator —
+# render in the console's palette natively instead of being chased with overrides.
 [theme]
 base = "dark"
-primaryColor = "#0E7C86"
-backgroundColor = "#0F1720"
-secondaryBackgroundColor = "#1B2A38"
-textColor = "#E6EDF3"
+primaryColor = "#00D4AA"
+backgroundColor = "#000000"
+secondaryBackgroundColor = "#111111"
+textColor = "#FFFFFF"
+borderColor = "#1A1A1A"
+linkColor = "#00D4AA"
+codeBackgroundColor = "#0D0D0D"
+font = "sans-serif"

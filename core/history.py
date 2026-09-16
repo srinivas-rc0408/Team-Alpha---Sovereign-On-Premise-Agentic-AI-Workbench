@@ -35,7 +35,10 @@ from . import audit
 # whitelist-validated rather than sanitised — no traversal shape can survive this.
 _ID_RE = re.compile(r"^\d{8}T\d{6}_[0-9a-f]{8}$")
 
-_STEP_KEYS = ("plan", "vision", "context", "calc", "safety", "reflection", "answer")
+# safety_input rides along with the verdict: the console renders the limits and
+# SOP citation a verdict was computed against, so a reloaded run has to show the
+# same numbers rather than falling back to whatever the query claimed.
+_STEP_KEYS = ("plan", "vision", "context", "calc", "safety", "safety_input", "reflection", "answer")
 
 _CRITICAL = {"CRITICAL", "EXCEEDS", "BELOW_MINIMUM"}
 _WARNING = {"CAUTION"}
