@@ -1,0 +1,63 @@
+RELIANCE INDUSTRIES LIMITED — JAMNAGAR REFINERY
+SAMPLE / DEMO DOCUMENT — fictional content for RAG pilot demonstration only
+STANDARD OPERATING PROCEDURE
+Feed Preheat Train — Main Feed Control Valve (FCV-105) Operation & Safety Limits
+Document No.: SOP-JAM-CDU2-104-A | Revision: 3 | Effective Date: 01-Feb-2026 | Site: Jamnagar Refinery Complex, Gujarat
+1. Purpose
+This procedure defines the safe operating limits, monitoring requirements, and emergency response actions for the Main Feed Control Valve (FCV-105) and associated equipment in the Crude Unit-2 Feed Preheat Train (Unit 100) at Jamnagar Refinery Complex, as shown on Drawing RIL-JAM-CDU2-104 Rev. C.
+2. Scope
+This SOP applies to all board operators, field operators, and maintenance personnel working on or near P-101, E-102, FCV-105, PSV-102, and H-101 within Unit 100, Jamnagar site.
+3. Safe Operating Limits
+Equipment / Tag
+Parameter
+Limit
+FCV-105
+Maximum Rated Pressure
+285 psig
+FCV-105
+Design Temperature
+450 °F
+PSV-102
+Relief Set Pressure
+300 psig
+H-101
+Maximum Outlet Temperature
+720 °F
+P-101
+Minimum Flow (anti-surge)
+450 gpm
+Note: FCV-105 was re-rated from 250 psig to 285 psig under MOC-2024-118 (Rev. C of RIL-JAM-CDU2-104). Any reference to the old 250 psig limit in legacy documentation is superseded.
+4. Normal Operating Procedure
+4.1 Startup
+a) Confirm P-101 suction and discharge valves are open and casing is vented of vapor.
+b) Start P-101 and confirm flow indication FI-101 is above minimum flow (450 gpm) within 60 seconds to protect against pump surge.
+c) Slowly open FCV-105 in manual mode, ramping no faster than 5% valve position per minute, while monitoring PI-105.
+d) Once PI-105 stabilizes below 285 psig and flow is steady, transfer FCV-105 to automatic control.
+e) Bring H-101 online per SOP-JAM-CDU2-104-C (Fired Heater Startup) once feed flow through the preheat train is confirmed stable.
+4.2 Normal Monitoring
+Board operators shall log PI-105, FI-101, and H-101 outlet temperature every 2 hours during normal operation. Any reading within 5% of a safe operating limit shall be reported to the Shift Supervisor immediately.
+5. Emergency Response Actions
+Condition
+Trigger
+Required Action
+High Pressure
+PI-105 > 285 psig
+Close FCV-105 from the board; notify Shift Supervisor; do not reset until root cause identified.
+Relief Lift
+PSV-102 discharge alarm
+Initiate emergency shutdown of P-101 per SOP-JAM-CDU2-104-D; isolate E-102.
+High Temperature
+H-101 outlet > 720 °F
+Reduce firing rate immediately; if temperature continues to rise, trip H-101 fuel gas per Fired Heater ESD procedure.
+Low Flow
+FI-101 < 450 gpm for > 60 sec
+Verify P-101 minimum flow bypass is open; if flow does not recover, stop P-101 to prevent pump damage.
+6. Personal Protective Equipment (PPE)
+Fire-resistant coveralls, hard hat, safety glasses, and steel-toe boots are required in Unit 100 at all times. H2S monitors are mandatory when working within 10 meters of the crude feed lines. Hearing protection is required within 3 meters of P-101 while running.
+7. References
+• Drawing RIL-JAM-CDU2-104, Rev. C — Feed Preheat Train P&ID
+• MOC-2024-118 — FCV-105 Pressure Rating Change
+• SOP-JAM-CDU2-104-C — Fired Heater Startup
+• SOP-JAM-CDU2-104-D — Unit 100 Emergency Shutdown Procedure
+Approved by: J. Rao, Chief Process Engineer | Next Review Date: 01-Feb-2027
+This is a fictional sample document created for an offline RAG pilot demonstration. It is not an actual Reliance Industries Limited operating procedure.

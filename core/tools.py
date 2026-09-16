@@ -1,4 +1,4 @@
-"""Agent tools — local vision (moondream), RAG search, sandboxed calculator."""
+"""Agent tools — local vision (Qwen2.5-VL), RAG search, sandboxed calculator."""
 import ast
 import math
 import operator
@@ -11,9 +11,17 @@ import ollama
 from .rag import search as _rag_search
 
 VISION_PROMPT = (
-    "Describe this industrial image in detail. Note any gauges, dial/display "
-    "readings and their units, equipment type, labels, valve/switch states, "
-    "leaks, corrosion, and visible safety hazards."
+    "You are inspecting an industrial image (a gauge, equipment photo, or a P&ID/"
+    "engineering drawing) for a refinery operator. Report only what is actually "
+    "visible, and never invent a tag number, label, or value:\n"
+    "1. Transcribe VERBATIM every piece of text, equipment tag (e.g. FCV-105, "
+    "PI-105, P-101), and numeric rating you can read, including units "
+    "(psig, bar, degF, degC, mm/s, gpm) and any drawing revision or MOC number.\n"
+    "2. Report any gauge or digital-display reading with its unit, and any alarm, "
+    "trip, or warning state shown.\n"
+    "3. Note equipment type, valve/switch positions, and any visible leak, "
+    "corrosion, or safety hazard.\n"
+    "If a detail is not legible, say so rather than guessing."
 )
 
 
@@ -23,7 +31,7 @@ def _client():
 
 def vision(image_path: str, prompt: str = VISION_PROMPT) -> str:
     resp = _client().generate(
-        model=os.getenv("VISION_MODEL", "moondream"),
+        model=os.getenv("VISION_MODEL", "qwen2.5vl:3b"),
         prompt=prompt,
         images=[image_path],
     )

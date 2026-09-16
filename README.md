@@ -27,7 +27,7 @@ keys, no cloud services, and nothing is ever sent anywhere.
 |---|---|---|
 | RAM | 16GB | 8GB runs but swaps heavily under `qwen2.5:7b` |
 | GPU | 4GB VRAM, or none | With less VRAM Ollama offloads layers to CPU — slower, still works |
-| Disk | ~8GB free | Model weights (~6.5GB) + index + history |
+| Disk | ~10GB free | Model weights (~8GB) + index + history |
 | OS | Windows 10/11, Linux, or macOS | A dedicated installer for each |
 | Python | 3.10 or newer | The installer creates its own isolated venv |
 
@@ -38,7 +38,7 @@ RTX 3050 Ti (4GB), 16GB RAM, Arch Linux — roughly 10–60s per query.
 
 > ## ⚠️ The one honest note about internet
 >
-> **First-time setup downloads ~6.5GB of AI models and needs internet ONCE.
+> **First-time setup downloads ~8GB of AI models and needs internet ONCE.
 > After setup, AEGIS runs 100% offline — no internet, ever.**
 >
 > You can disconnect the network permanently once `install` finishes and every
@@ -187,7 +187,7 @@ ping -c1 8.8.8.8        # fails: no route to host
 ./run.sh                # starts anyway
 ```
 
-Ask a question. It answers normally — FAISS, `nomic-embed-text`, `moondream`
+Ask a question. It answers normally — FAISS, `nomic-embed-text`, `qwen2.5vl:3b`
 and `qwen2.5:7b` all run locally against Ollama. For the receipts on the
 command line:
 
@@ -208,7 +208,7 @@ install, which downloads the weights from `ollama.com`. Nothing else, ever.
 | Symptom | Fix |
 |---|---|
 | `Cannot reach Ollama at …` | Start it: `ollama serve`. The launcher tries this for you first. |
-| Model download fails or stalls | Re-run the installer. Already-downloaded models are skipped, so it resumes rather than restarting the 6.5GB. |
+| Model download fails or stalls | Re-run the installer. Already-downloaded models are skipped, so it resumes rather than restarting the 8GB. |
 | A model is missing | AEGIS prints the exact command, e.g. `ollama pull qwen2.5:7b`. |
 | `offline verification failed — refusing to start` | `OLLAMA_HOST` in `.env` points off-machine. Set it to `http://localhost:11434`. |
 | `The search index … is unreadable or corrupted` | Rebuild it — the sidebar button, or `make index`. No source documents are lost. |
@@ -280,7 +280,7 @@ Makefile                  — install / run / test / index / clean / reset-chats
 .streamlit/config.toml    — telemetry off, loopback-only binding, CORS+XSRF on
 core/agent.py             — LangGraph state machine + friendly_error() translator
 core/rag.py               — hybrid FAISS + BM25 retrieval over docs/
-core/tools.py             — vision (moondream), sandboxed calc, RAG search
+core/tools.py             — vision (Qwen2.5-VL), sandboxed calc, RAG search
 core/audit.py             — SHA-256 hash-chained JSONL audit log
 core/safety_rules.py      — deterministic pressure/temperature/vibration/thickness checks
 core/doc_diff.py          — SOP/P&ID revision diffing + risk-rated safety flagging
@@ -302,7 +302,7 @@ defaults, and **none of them is a key or a credential.**
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | local Ollama server — must stay loopback or the launcher refuses to start |
 | `LLM_MODEL` | `qwen2.5:7b` | reasoning model |
-| `VISION_MODEL` | `moondream` | image description model |
+| `VISION_MODEL` | `qwen2.5vl:3b` | vision model — reads gauges + P&ID/drawing text (fall back to `moondream` on very low VRAM) |
 | `EMBED_MODEL` | `nomic-embed-text` | embedding model for RAG |
 | `DOCS_DIR` | `docs` | SOPs to index |
 | `INDEX_DIR` | `data/embeddings` | FAISS + BM25 index output |
@@ -323,7 +323,7 @@ Telemetry switches (`LANGCHAIN_TRACING_V2`, `LANGCHAIN_ENDPOINT`,
 ## FAQ
 
 **Does it need internet?**
-Once, during install, to download ~6.5GB of model weights. After that, never.
+Once, during install, to download ~8GB of model weights. After that, never.
 You can physically disconnect the machine and every feature keeps working.
 
 **Where is my data?**
@@ -361,7 +361,7 @@ never truncated and re-chained — that needs an external anchor.
 | Deck component | This prototype | Why |
 |---|---|---|
 | vLLM · Qwen2.5-Coder-32B | Ollama · qwen2.5:7b | Fits a single consumer GPU; vLLM/32B is the scale-up path once on dedicated server hardware |
-| Qwen2.5-VL-7B (defect boxes) | Ollama · moondream (text description) | moondream is the model actually installed; swap the model name in `VISION_MODEL` to upgrade |
+| Qwen2.5-VL-7B (defect boxes) | Ollama · qwen2.5vl:3b (text description) | The 3B Qwen2.5-VL reads gauge displays and P&ID/drawing text (tag numbers, pressure ratings, revisions) — verified reading "285 psig / Rev C" off a sample P&ID that moondream could not. It returns prose, not structured defect bounding boxes; the 7B/32B variants or a fine-tune are the scale-up path once on more VRAM |
 | LanceDB + bge-m3 hybrid retrieval | FAISS + BM25 hybrid (`nomic-embed-text` + `rank-bm25`, reciprocal-rank fusion) | Same hybrid dense+keyword property the deck claims (catches exact SOP IDs like "SOP-MNT-402" that pure-vector search misses), without standing up a new vector DB |
 | Next.js + React Flow live DAG | Streamlit | One file, no frontend build step, fast to demo |
 | FastAPI + Redis | direct Python calls | No queue/service boundary needed at single-user prototype scale |
@@ -372,7 +372,7 @@ never truncated and re-chained — that needs an external anchor.
 ## Known gaps
 
 - No LanceDB, FastAPI/Redis, Next.js/React Flow, or gVisor — see the table above for what stands in for each and why.
-- Vision returns a text description, not structured defect bounding boxes (needs Qwen2.5-VL; only moondream is installed here).
+- Vision (`qwen2.5vl:3b`) returns a text description, not structured defect bounding boxes. It reliably reads gauge/digital displays and P&ID/drawing text, but analog-needle *angle* estimation is approximate (it reads the dial numbers correctly but can misjudge exactly where the needle points). On a 4GB GPU the VL model offloads partly to CPU, so image queries run slower (~20–50s of vision time) than text-only ones.
 - Single-user, single-process — no RBAC/multi-tenant plant-DMZ deployment yet.
 - `safety_rules.py`'s vibration/wall-thickness checkers are generic threshold evaluators, not preloaded with ISO 10816-3 (or any other) table values — limits must come from the query, retrieved SOP text, or your own `config/safety_limits.json`, so the system never asserts an unverified regulatory number as fact.
 - `core/doc_diff.py` splits documents into sections on blank lines and pairs revisions by text similarity (stdlib `difflib`); its safety-critical flagging is a keyword heuristic that deliberately over-flags. Works well on prose-style SOPs, untested on structured P&ID exports.

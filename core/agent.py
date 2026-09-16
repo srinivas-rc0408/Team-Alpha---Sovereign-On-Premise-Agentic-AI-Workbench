@@ -116,20 +116,29 @@ def calc_node(state):
 
 
 def safety_check_node(state):
-    """Deterministic judgment, no LLM: plan_node's LLM only extracted which check
-    applies and the numbers involved (grounded in the query/context, never
-    invented); SafetyChecker's plain comparisons decide the verdict."""
+    """Deterministic judgment, no LLM in the verdict: plan_node's LLM extracted
+    which check applies and the reading; SafetyChecker's plain comparisons decide.
+
+    Operator-verified limits in config/safety_limits.json are AUTHORITATIVE and
+    override the LLM's extracted limit. This matters because the planner LLM will
+    hallucinate a threshold even when the prompt forbids it (observed: an 18.4 bar
+    reading paired with a fabricated safe_limit of 20, silently flipping a real
+    CRITICAL violation to NORMAL). A safety gate whose limit can be moved by a
+    hallucination is not deterministic — so when the plant has stated a verified
+    number for this check type, that number wins, and the LLM's is used only when
+    config has none for that type."""
     sc = state["plan"].get("safety_check") or {}
     check_type = sc.get("type", "none")
     if check_type == "none" or sc.get("reading") is None:
         return {}
     used_reference = False
-    if sc.get("safe_limit") is None:
-        ref = safety_rules.load_reference_limits().get(check_type, {})
-        if ref.get("safe_limit") is not None:
-            sc = {**sc, "safe_limit": ref["safe_limit"],
-                  "critical_limit": sc.get("critical_limit", ref.get("critical_limit"))}
-            used_reference = True
+    ref = safety_rules.load_reference_limits().get(check_type, {})
+    if ref.get("safe_limit") is not None:
+        # Config is authoritative: overwrite whatever the LLM extracted. Keep the
+        # LLM's critical_limit only if config doesn't specify one.
+        sc = {**sc, "safe_limit": ref["safe_limit"],
+              "critical_limit": ref.get("critical_limit", sc.get("critical_limit"))}
+        used_reference = True
     if sc.get("safe_limit") is None:
         return {}
     checker = safety_rules.SafetyChecker()
@@ -303,7 +312,7 @@ def friendly_error(exc: Exception) -> str:
                     f"Fix — run this, then try again:\n\n    ollama pull {model}")
         return ("A required model is not installed in Ollama.\n\n"
                 "Fix — run:\n\n    ollama pull qwen2.5:7b\n"
-                "    ollama pull moondream\n    ollama pull nomic-embed-text")
+                "    ollama pull qwen2.5vl:3b\n    ollama pull nomic-embed-text")
 
     if any(s in low for s in ("connection refused", "cannot reach ollama", "failed to connect",
                               "connection error", "max retries", "connectionerror")):

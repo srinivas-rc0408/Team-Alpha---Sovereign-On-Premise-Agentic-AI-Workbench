@@ -34,7 +34,7 @@ except Exception as e:
     sys.exit(1)
 
 print("\n[TEST 3] Checking required models...")
-required = ["qwen2.5:7b", "moondream", "nomic-embed-text"]
+required = ["qwen2.5:7b", "qwen2.5vl:3b", "nomic-embed-text"]
 for req in required:
     found = any(req in name for name in model_names)
     status = "OK" if found else "MISSING"

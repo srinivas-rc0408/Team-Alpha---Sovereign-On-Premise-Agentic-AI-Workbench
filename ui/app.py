@@ -281,7 +281,7 @@ with st.expander("ℹ️ How AEGIS works"):
         "         └───────────────── retry, capped at 2x ─────────────────┘\n"
         "```\n"
         "- **Plan** — the LLM decides which steps this query actually needs.\n"
-        "- **Vision** — moondream describes an attached photo (skipped if none).\n"
+        "- **Vision** — Qwen2.5-VL reads gauge displays and P&ID/drawing text in an attached photo (skipped if none).\n"
         "- **RAG** — hybrid FAISS + BM25 search over your indexed SOPs.\n"
         "- **Calc** — arithmetic runs in a Docker sandbox (`network=none`), never in the LLM's head.\n"
         "- **Safety Check** — deterministic code (`core/safety_rules.py`), not an LLM judgment.\n"

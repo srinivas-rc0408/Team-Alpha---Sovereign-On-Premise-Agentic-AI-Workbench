@@ -36,7 +36,7 @@ during install, drawn separately because it is the only exception.
    │      │       │      │                           (or AST-whitelist eval) │
           │       │      └─► core/rag.py ─► FAISS + BM25 ◄── data/embeddings/ 
    │      │       │                                                         │
-          │       └─► moondream ──┐                                          
+          │       └─► qwen2.5-VL ─┐                                          
    │      └─► qwen2.5:7b ─────────┼─► Ollama daemon @ 127.0.0.1:11434       │
                 nomic-embed-text ─┘        (local model weights on disk)      
    │                                                                        │
@@ -48,7 +48,7 @@ during install, drawn separately because it is the only exception.
    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
    ONE-TIME ONLY, during install.sh / install.ps1:
-       ollama pull  ────────────────────────────────►  ollama.com  (~6.5GB)
+       ollama pull  ────────────────────────────────►  ollama.com  (~8GB)
    After that the box above is closed. No runtime path crosses it.
 ```
 
@@ -211,8 +211,13 @@ come from the plant's own documents via RAG, not from the model's memory.
   calc/safety_check when the plan calls for them, none of which need the LLM)
   takes roughly 20-60 seconds depending on how many of the optional nodes
   fire and how long the generated answer is.
-- **moondream** (vision) and **nomic-embed-text** (embeddings) are both small
-  enough to run comfortably within the 4GB VRAM budget.
+- **nomic-embed-text** (embeddings) is small enough to run comfortably within
+  the 4GB VRAM budget. **qwen2.5vl:3b** (vision) is larger and partly offloads
+  to CPU on a 4GB GPU, so image queries add ~20-50s of vision time — the
+  trade-off for a model that actually reads gauge displays and P&ID/drawing text
+  (tag numbers, pressure ratings, revisions) rather than just describing the
+  scene. On very low VRAM, set `VISION_MODEL=moondream` for a lighter,
+  gist-only fallback.
 - This is expected, not a bug: the pitch deck's vLLM/Qwen2.5-Coder-32B path
   assumes dedicated server-class GPU hardware. The measured numbers above are
   what a single consumer laptop GPU actually delivers, offered honestly

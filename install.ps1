@@ -1,7 +1,7 @@
 ﻿# AEGIS one-time setup for Windows (PowerShell 5.1+).
 #
 # This is the ONLY step that needs internet: it installs Ollama if missing and
-# pulls ~6.5GB of model weights. Everything after this runs fully offline.
+# pulls ~8GB of model weights. Everything after this runs fully offline.
 #
 # Safe to re-run: every step checks whether it is already done before doing it.
 #
@@ -13,7 +13,7 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 
-$Models = @('qwen2.5:7b', 'moondream', 'nomic-embed-text')
+$Models = @('qwen2.5:7b', 'qwen2.5vl:3b', 'nomic-embed-text')
 $TotalSteps = 10
 $script:StepNo = 0
 
@@ -107,7 +107,7 @@ if (Test-OllamaUp) {
 }
 
 # -- 4. Models ---------------------------------------------------------------
-Write-Step "Pulling models (~6.5GB total - the only step that needs internet)"
+Write-Step "Pulling models (~8GB total - the only step that needs internet)"
 try {
     $free = (Get-PSDrive -Name ((Get-Location).Drive.Name)).Free / 1GB
     if ($free -lt 10) { Write-Warn ("only {0:N1}GB free on this drive - models need ~8GB" -f $free) }

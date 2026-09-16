@@ -1,0 +1,40 @@
+STANDARD OPERATING PROCEDURE — SOP-ROT-118
+Rotating Equipment: Vibration Monitoring & Bearing Health
+Revision: 2  |  Effective Date: 2026-02-01  |  Owner: Reliability Dept.
+
+1. SCOPE
+   Covers pumps, fans, and motors on rigid foundations (ISO 10816-3 Group 2,
+   medium machines 15 kW to 300 kW). Pump P-201 (crude charge pump) falls in
+   this class.
+
+2. VIBRATION MEASUREMENT
+   - Measure overall velocity in mm/s RMS at the bearing housings, in three
+     axes (horizontal, vertical, axial), at normal operating speed.
+   - Report the highest of the three axes as the machine's vibration level.
+
+3. VIBRATION LIMITS (velocity, mm/s RMS)
+   - Zone A/B (good):        up to 4.5 mm/s  — normal operation, no action.
+   - Zone C (unsatisfactory): 4.5 - 7.1 mm/s — acceptable short-term only;
+     increase monitoring to weekly; plan corrective maintenance.
+   - Zone D (unacceptable):  above 7.1 mm/s — SAFETY-CRITICAL. Vibration at or
+     above 7.1 mm/s RMS exceeds the allowable limit; schedule inspection and
+     prepare for shutdown. Do not continue running unattended.
+   The 7.1 mm/s RMS boundary is the maximum allowable limit for this machine
+   class per ISO 10816-3.
+
+4. BEARING TEMPERATURE
+   - Bearing housing temperature normal range: up to 80 degC.
+   - Alarm at 90 degC; trip at 100 degC.
+
+5. PIPE / SHELL WALL THICKNESS (associated static equipment)
+   - Minimum allowable wall thickness for in-service vessels and lines in this
+     unit: 6.35 mm (0.25 in), per the vessel datasheet and SOP-MNT-402.
+   - Any measured thickness below 6.35 mm is BELOW MINIMUM: remove from service
+     pending engineering (fitness-for-service) review.
+   - Margin under 10% above minimum: shorten the next inspection interval.
+
+6. ESCALATION
+   On any Zone D vibration (>= 7.1 mm/s) or bearing trip (>= 100 degC):
+   a. Notify the control room and Reliability Engineer immediately.
+   b. Prepare an orderly shutdown of the affected machine per unit procedure.
+   c. Log the event with tag number, axis, reading, and timestamp.
