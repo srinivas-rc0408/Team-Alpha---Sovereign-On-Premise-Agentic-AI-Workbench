@@ -13,7 +13,7 @@ import ollama
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
 
-from . import audit, tools
+from . import audit, network_monitor, safety_rules, tools
 
 
 MAX_LOOPS = 2  # reflect may send the agent back for more evidence at most this many times
@@ -36,6 +36,7 @@ class AgentState(TypedDict, total=False):
     vision: str
     context: str
     calc: str
+    safety: dict
     reflection: dict
     answer: str
     trace: list
@@ -58,8 +59,14 @@ def plan_node(state):
     prompt = (
         "You are the planner for an air-gapped oil-refinery assistant. Decide which "
         "capabilities the query needs. Reply as JSON with boolean keys "
-        '"needs_vision", "needs_rag", "needs_calc", and a string "calc_expression" '
-        "(a pure Python/math expression to evaluate, else empty).\n"
+        '"needs_vision", "needs_rag", "needs_calc", a string "calc_expression" '
+        "(a pure Python/math expression to evaluate, else empty), and a "
+        '"safety_check" object when the query gives a specific measured value to '
+        'judge against a limit: {"type": one of "pressure"/"temperature"/'
+        '"vibration"/"wall_thickness"/"none", "reading": number, "safe_limit": '
+        'number, "critical_limit": number or null}. Only fill safe_limit/'
+        "critical_limit with values the query or context actually states — never "
+        'invent a threshold. Use type "none" if no such check applies.\n'
         f"An image is {'ATTACHED' if has_image else 'NOT attached'}.\n"
         f"Query: {q}"
     )
@@ -104,6 +111,35 @@ def calc_node(state):
     result = tools.calculate(expr)
     audit.log("calc", {"expression": expr, "result": result})
     return {"calc": f"{expr} = {result}", "trace": state["trace"] + [f"CALC {expr} = {result}"]}
+
+
+def safety_check_node(state):
+    """Deterministic judgment, no LLM: plan_node's LLM only extracted which check
+    applies and the numbers involved (grounded in the query/context, never
+    invented); SafetyChecker's plain comparisons decide the verdict."""
+    sc = state["plan"].get("safety_check") or {}
+    check_type = sc.get("type", "none")
+    if check_type == "none" or sc.get("reading") is None or sc.get("safe_limit") is None:
+        return {}
+    checker = safety_rules.SafetyChecker()
+    try:
+        if check_type == "pressure":
+            verdict = checker.check_pressure(sc["reading"], sc["safe_limit"], sc.get("critical_limit"))
+        elif check_type == "temperature":
+            verdict = checker.check_temperature(sc["reading"], sc["safe_limit"], sc.get("critical_limit"))
+        elif check_type == "vibration":
+            verdict = checker.check_vibration(sc["reading"], sc["safe_limit"])
+        elif check_type == "wall_thickness":
+            verdict = checker.check_wall_thickness(sc["reading"], sc["safe_limit"])
+        else:
+            return {}
+    except (KeyError, TypeError, ZeroDivisionError):
+        return {}
+    audit.log("safety_check", {"type": check_type, "input": sc, "verdict": verdict})
+    return {
+        "safety": verdict,
+        "trace": state["trace"] + [f"SAFETY_CHECK {check_type}: {verdict['status']}"],
+    }
 
 
 def reflect_node(state):
@@ -153,6 +189,12 @@ def answer_node(state):
         parts.append(f"KNOWLEDGE BASE (SOPs):\n{state['context']}")
     if state.get("calc"):
         parts.append(f"CALCULATION:\n{state['calc']}")
+    if state.get("safety"):
+        s = state["safety"]
+        parts.append(
+            f"DETERMINISTIC SAFETY CHECK (not an LLM judgment): status={s['status']}, "
+            f"action={s['action']}"
+        )
     grounding = "\n\n".join(parts) if parts else "No supporting context was retrieved."
     reflection = state.get("reflection", {})
     caution = "" if reflection.get("sufficient", True) else (
@@ -167,11 +209,16 @@ def answer_node(state):
     )
     ans = _llm().invoke(prompt).content.strip()
 
-    # The reflect LLM's own approval judgment is a non-deterministic single
-    # classifier — not trustworthy as the sole gate on a safety-critical sign-off.
-    # Back it with a deterministic keyword check over the answer actually shown
-    # to the operator, so a flip in the LLM's call can't silently skip sign-off.
-    requires_approval = state.get("requires_approval", False) or _mentions_safety_risk(ans)
+    # Three independent gates, any one of which can force sign-off: reflect's LLM
+    # judgment, a keyword check over the answer actually shown to the operator, and
+    # (strongest, since it's pure code) the safety_rules verdict. A hallucination or
+    # a flip in either LLM call can't silently skip sign-off past the rule engine.
+    safety_status = state.get("safety", {}).get("status")
+    requires_approval = (
+        state.get("requires_approval", False)
+        or _mentions_safety_risk(ans)
+        or safety_status in ("CRITICAL", "EXCEEDS", "BELOW_MINIMUM")
+    )
 
     audit.log("answer", {"chars": len(ans), "requires_approval": requires_approval})
     return {
@@ -188,13 +235,17 @@ def build_agent():
         ("vision", vision_node),
         ("rag", rag_node),
         ("calc", calc_node),
+        ("safety_check", safety_check_node),
         ("reflect", reflect_node),
         ("bump_loop", bump_loop_node),
         ("answer", answer_node),
     ]:
         g.add_node(name, fn)
     g.set_entry_point("plan")
-    for a, b in [("plan", "vision"), ("vision", "rag"), ("rag", "calc"), ("calc", "reflect")]:
+    for a, b in [
+        ("plan", "vision"), ("vision", "rag"), ("rag", "calc"),
+        ("calc", "safety_check"), ("safety_check", "reflect"),
+    ]:
         g.add_edge(a, b)
     g.add_conditional_edges("reflect", _after_reflect, {"retry": "bump_loop", "answer": "answer"})
     g.add_edge("bump_loop", "rag")
@@ -220,7 +271,15 @@ def run(query: str, image_path: str = None) -> dict:
     if _AGENT["g"] is None:
         _AGENT["g"] = build_agent()
     audit.log("query", {"query": query, "image": os.path.basename(image_path) if image_path else None})
-    return _AGENT["g"].invoke({"query": query, "image_path": image_path, "trace": []})
+    result, net_report = network_monitor.audit(
+        _AGENT["g"].invoke, {"query": query, "image_path": image_path, "trace": []}
+    )
+    audit.log("network_audit", net_report)
+    result["network_audit"] = net_report
+    result["trace"].append(
+        f"NETWORK_AUDIT {'clean' if net_report['clean'] else 'EXTERNAL CONNECTIONS DETECTED'}"
+    )
+    return result
 
 
 run_aegis = run

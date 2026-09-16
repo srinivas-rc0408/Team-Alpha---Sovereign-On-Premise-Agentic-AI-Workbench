@@ -9,3 +9,4 @@ ollama
 pypdf
 streamlit
 python-dotenv
+psutil

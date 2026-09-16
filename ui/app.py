@@ -43,7 +43,7 @@ if st.button("Run", type="primary") and query.strip():
         tmp.close()
         image_path = tmp.name
         st.image(img, width=320)
-    with st.spinner("Reasoning locally (Plan → Vision → RAG → Calc → Reflect → Answer)…"):
+    with st.spinner("Reasoning locally (Plan → Vision → RAG → Calc → Safety Check → Reflect → Answer)…"):
         try:
             result = agent.run(query, image_path)
         except RuntimeError as e:
@@ -57,6 +57,13 @@ result = st.session_state.get("result")
 if result:
     st.subheader("Answer")
     st.markdown(result.get("answer", "_no answer_"))
+
+    safety = result.get("safety")
+    if safety:
+        badge = {"CRITICAL": st.error, "EXCEEDS": st.error, "BELOW_MINIMUM": st.error,
+                 "CAUTION": st.warning}.get(safety["status"], st.success)
+        badge(f"Deterministic safety check: **{safety['status']}** — {safety['action']} "
+              f"(rule engine, not an LLM judgment)")
 
     if result.get("requires_approval"):
         if st.session_state.get("signed_off"):
@@ -79,3 +86,19 @@ if result:
     if result.get("context"):
         with st.expander("Retrieved SOP context (hybrid dense + BM25)"):
             st.text(result["context"])
+
+    net = result.get("network_audit")
+    if net:
+        with st.expander("Network audit — air-gap proof", expanded=not net["clean"]):
+            if net["clean"]:
+                st.success("✅ Zero external connections opened by AEGIS during this query.")
+            else:
+                st.error("❌ External connection(s) detected — see below.")
+                st.write(net["external_connections"])
+            st.caption(
+                f"System-wide bytes during window: {net['system_wide_bytes_sent']} sent / "
+                f"{net['system_wide_bytes_recv']} recv (includes any other traffic on the "
+                "machine — not AEGIS-specific; the connection list above is what's scoped)."
+            )
+            st.text("Connections opened by AEGIS's own process tree:")
+            st.text("\n".join(net["connections"]) or "(none)")
