@@ -5,7 +5,9 @@
 #
 set -euo pipefail
 
-cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+# dirname+pwd rather than `readlink -f`: stock macOS/BSD readlink has no -f flag,
+# so that idiom silently resolves to "." there and can run against the wrong directory.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PORT="${AEGIS_PORT:-8501}"
 
