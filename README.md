@@ -298,8 +298,11 @@ core/network_monitor.py   — per-query air-gap audit
 ui/app.py                 — Streamlit console: history, live pipeline, sign-off, privacy audit
 config/                   — safety_limits.example.json: template for your verified thresholds
 docs/                     — SOPs to index (PDF/TXT/MD)
-test_aegis.py             — end-to-end smoke test
+test_aegis.py             — end-to-end smoke test (stack, models, RAG, safety override)
+test_ui.py                — Streamlit console resilience test (AppTest: renders the app against torn logs, corrupt files, Ollama down)
 ```
+
+`make test` runs both test files plus every `core/*` module self-check.
 
 ## Environment variables
 
@@ -312,6 +315,7 @@ defaults, and **none of them is a key or a credential.**
 | `LLM_MODEL` | `qwen2.5:7b` | reasoning model |
 | `VISION_MODEL` | `qwen2.5vl:3b` | vision model — reads gauges + P&ID/drawing text (fall back to `moondream` on very low VRAM) |
 | `EMBED_MODEL` | `nomic-embed-text` | embedding model for RAG |
+| `OLLAMA_KEEP_ALIVE` | `60m` | how long Ollama keeps a model in memory after a request — accepts `30m`/`2h`/bare seconds. Longer means fewer cold reloads (≈4s each on a 4GB GPU) between questions; Ollama still evicts early if another model needs the VRAM, so it can't exhaust the GPU |
 | `DOCS_DIR` | `docs` | SOPs to index |
 | `INDEX_DIR` | `data/embeddings` | FAISS + BM25 index output |
 | `CHATS_DIR` | `data/chats` | local chat history |
@@ -322,8 +326,8 @@ defaults, and **none of them is a key or a credential.**
 | `SAFETY_LIMITS_FILE` | `config/safety_limits.json` | your own verified thresholds — copy from the example; never pre-populated by AEGIS |
 | `AEGIS_PORT` | `8501` | port for the launcher |
 
-Telemetry switches (`LANGCHAIN_TRACING_V2`, `LANGCHAIN_ENDPOINT`,
-`LANGSMITH_TRACING`, `ANONYMIZED_TELEMETRY`, `HF_HUB_OFFLINE`,
+Telemetry switches (`LANGCHAIN_TRACING_V2`, `LANGCHAIN_TRACING`,
+`LANGCHAIN_ENDPOINT`, `LANGSMITH_TRACING`, `ANONYMIZED_TELEMETRY`, `HF_HUB_OFFLINE`,
 `TRANSFORMERS_OFFLINE`, `SCARF_NO_ANALYTICS`, `DO_NOT_TRACK`,
 `STREAMLIT_BROWSER_GATHER_USAGE_STATS`) are **force-set to disabled** by
 `core/__init__.py` at import time and cannot be re-enabled via `.env`.
