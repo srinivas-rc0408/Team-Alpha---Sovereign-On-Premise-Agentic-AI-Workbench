@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # AEGIS one-time setup. This is the ONLY step that needs internet: it installs
-# Ollama if missing and pulls ~6.5GB of model weights. Everything after this
+# Ollama if missing and pulls ~8GB of model weights. Everything after this
 # runs fully offline.
 #
 # Safe to re-run: every step checks whether it is already done before doing it.
@@ -13,7 +13,7 @@ set -euo pipefail
 # the wrong directory.
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-MODELS=(qwen2.5:7b moondream nomic-embed-text)
+MODELS=(qwen2.5:7b qwen2.5vl:3b nomic-embed-text)
 STEPS=10
 STEP=0
 
@@ -100,10 +100,10 @@ else
 fi
 
 # ── 4. Models ────────────────────────────────────────────────────────────────
-step "Pulling models (~6.5GB total — the only step that needs internet)"
+step "Pulling models (~8GB total — the only step that needs internet)"
 if command -v df >/dev/null 2>&1; then
   FREE_GB=$(df -Pk "$HOME" | awk 'NR==2 {print int($4/1048576)}')
-  [[ "$FREE_GB" -lt 10 ]] && warn "only ${FREE_GB}GB free in \$HOME — models need ~8GB"
+  [[ "$FREE_GB" -lt 10 ]] && warn "only ${FREE_GB}GB free in \$HOME — models need ~9GB"
 fi
 
 installed_models="$(ollama list 2>/dev/null || true)"

@@ -234,26 +234,43 @@ with st.sidebar:
         st.caption("No saved chats yet — run a query to start one."
                    if not keyword.strip() else "No chats match that search.")
 
-    # Scrollable so a long history never pushes the rest of the sidebar off-screen;
-    # "content" lets a short list size itself instead of leaving dead space.
-    with st.container(height=340 if len(chats) > 4 else "content"):
-        for chat in chats[:200]:
-            marker = "▸ " if chat["id"] == current_id else ""
-            icon = STATUS_ICON.get(chat.get("status", "SAFE"), "🟢")
-            row, delete_col = st.columns([5, 1])
-            if row.button(f"{marker}{icon} {chat['title'][:40]}", key=f"chat_{chat['id']}",
-                          use_container_width=True, help=chat.get("preview") or chat["title"]):
-                _load_session(chat["id"])
-                st.rerun()
-            if delete_col.button("🗑", key=f"del_{chat['id']}", help="Delete this chat"):
-                history.delete_session(chat["id"])
-                if chat["id"] == current_id:
-                    st.session_state["session"] = history.new_session()
-                    for key in ("result", "step_times", "signed_off", "restored_from"):
-                        st.session_state.pop(key, None)
-                st.rerun()
-            row.caption(f"{chat['updated_at'][:16].replace('T', ' ')} · "
-                        f"{chat['entry_count']} run(s) · {chat.get('status', 'SAFE')}")
+    def _render_chat_row(chat):
+        marker = "▸ " if chat["id"] == current_id else ""
+        icon = STATUS_ICON.get(chat.get("status", "SAFE"), "🟢")
+        row, delete_col = st.columns([5, 1])
+        # Titles can repeat (the same question asked in two chats), so the timestamp
+        # is what tells rows apart — show it prominently on its own line.
+        ts = chat["updated_at"][:16].replace("T", " ")
+        if row.button(f"{marker}{icon} {chat['title'][:38]}", key=f"chat_{chat['id']}",
+                      use_container_width=True, help=chat.get("preview") or chat["title"]):
+            _load_session(chat["id"])
+            st.rerun()
+        if delete_col.button("🗑", key=f"del_{chat['id']}", help="Delete this chat"):
+            history.delete_session(chat["id"])
+            if chat["id"] == current_id:
+                st.session_state["session"] = history.new_session()
+                for key in ("result", "step_times", "signed_off", "restored_from"):
+                    st.session_state.pop(key, None)
+            st.rerun()
+        row.caption(f"🕒 {ts} · {chat['entry_count']} run(s) · {chat.get('status', 'SAFE')}")
+
+    RECENT_N = 4
+    if keyword.strip():
+        # Search shows every match, scrollable so a long result set can't push the
+        # rest of the sidebar off-screen.
+        with st.container(height=340 if len(chats) > RECENT_N else "content"):
+            for chat in chats[:200]:
+                _render_chat_row(chat)
+    else:
+        # Default view: only the few most recent (newest first), so the sidebar
+        # stays legible. The rest live behind an expander, not lost.
+        for chat in chats[:RECENT_N]:
+            _render_chat_row(chat)
+        if len(chats) > RECENT_N:
+            with st.expander(f"📚 All {len(chats)} conversations"):
+                with st.container(height=340):
+                    for chat in chats[RECENT_N:200]:
+                        _render_chat_row(chat)
 
     st.divider()
     st.header("Knowledge base")
@@ -281,7 +298,7 @@ with st.expander("ℹ️ How AEGIS works"):
         "         └───────────────── retry, capped at 2x ─────────────────┘\n"
         "```\n"
         "- **Plan** — the LLM decides which steps this query actually needs.\n"
-        "- **Vision** — moondream describes an attached photo (skipped if none).\n"
+        "- **Vision** — Qwen2.5-VL reads gauge displays and P&ID/drawing text in an attached photo (skipped if none).\n"
         "- **RAG** — hybrid FAISS + BM25 search over your indexed SOPs.\n"
         "- **Calc** — arithmetic runs in a Docker sandbox (`network=none`), never in the LLM's head.\n"
         "- **Safety Check** — deterministic code (`core/safety_rules.py`), not an LLM judgment.\n"
@@ -370,13 +387,22 @@ with tab_ask:
             st.session_state["step_times"] = step_times
             st.session_state["signed_off"] = False
             st.session_state.pop("restored_from", None)
+            saved_ok = True
             try:
                 history.save_turn(
                     st.session_state["session"], result, cursor=cursor, timing=step_times
                 )
             except OSError as e:
                 # The answer is already on screen; a failed write must not hide it.
+                saved_ok = False
                 st.warning(f"Could not save this run to history: {e}")
+            if saved_ok:
+                # The sidebar is rendered at the top of the script, BEFORE this save,
+                # so without a rerun it would keep showing history as of before this
+                # run — the just-finished chat wouldn't appear until the next click.
+                # Rerun so the sidebar refreshes now; the result persists in
+                # session_state and re-renders below on the fresh pass.
+                st.rerun()
 
     result = st.session_state.get("result")
     if result:

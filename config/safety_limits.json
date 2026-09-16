@@ -1,0 +1,21 @@
+{
+  "_readme": "Operator-verified limits for this demo plant. Each 'source' cites where the number came from. AEGIS never invents these; it applies a check only when a limit is present here or stated in the query/retrieved SOP.",
+  "pressure": {
+    "safe_limit": 15.0,
+    "critical_limit": 18.0,
+    "source": "SOP-MNT-402 Rev.3 Section 2 (safe <15 bar(g), CRITICAL >=18 bar(g))"
+  },
+  "temperature": {
+    "safe_limit": 360.0,
+    "critical_limit": 370.0,
+    "source": "SOP-CDU-014 Section 1 (COT normal 340-360 degC, high alarm 370 degC)"
+  },
+  "vibration": {
+    "safe_limit": 7.1,
+    "source": "ISO 10816-3 Group 2 rigid-mount Zone C/D boundary (7.1 mm/s RMS); mirrored in SOP-ROT-118 Section 3"
+  },
+  "wall_thickness": {
+    "safe_limit": 6.35,
+    "source": "Vessel datasheet minimum allowable wall thickness 6.35 mm (0.25 in), per SOP-MNT-402 inspection appendix"
+  }
+}
