@@ -23,6 +23,19 @@ audit log. No query, document, or model weight ever leaves the machine; the UI
 binds to `127.0.0.1` only, and a network audit runs on every query to prove it
 (see `core/network_monitor.py`).
 
+## Features
+
+- ✅ LangGraph 6-node agent loop (Plan → Vision → RAG → Calc → Safety Check → Reflect → Answer) with a bounded reflect→RAG retry loop
+- ✅ Hybrid FAISS + BM25 retrieval (reciprocal rank fusion) over local SOPs, embedded with `nomic-embed-text`
+- ✅ Local vision descriptions of equipment/gauge photos via `moondream`
+- ✅ Sandboxed calculator — Docker (`network=none`, capabilities dropped) with an AST-whitelist in-process fallback
+- ✅ Deterministic safety checks (no LLM in the decision path) for pressure, temperature, vibration, and wall thickness, with operator-supplied reference limits (`config/safety_limits.json`)
+- ✅ Three independent gates on human sign-off (reflect judgment, keyword backstop, rule-engine verdict)
+- ✅ SHA-256 hash-chained, tamper-evident audit log (`core/audit.py`)
+- ✅ Per-query network audit proving zero external connections (`core/network_monitor.py`)
+- ✅ Document revision diffing with safety-impact summary (`core/differ.py`) — flags safety-critical changes between SOP/P&ID revisions
+- ✅ Streamlit UI: example queries, live per-step pipeline progress, sign-off workflow, audit/sandbox/network status, document comparison tab — binds to `127.0.0.1` only
+
 ## Quickstart
 
 ```bash
