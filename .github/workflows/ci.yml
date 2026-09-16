@@ -1,0 +1,23 @@
+name: CI
+
+# Runs the self-checks that don't need Ollama or Docker (core.tools,
+# core.audit, core.safety_rules, core.network_monitor). test_aegis.py needs a
+# live Ollama server with 3 pulled models plus Docker, so it stays a local
+# smoke test — not something CI can honestly claim to run.
+on:
+  push:
+  pull_request:
+
+jobs:
+  self-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m core.tools
+      - run: python -m core.audit
+      - run: python -m core.safety_rules
+      - run: python -m core.network_monitor
