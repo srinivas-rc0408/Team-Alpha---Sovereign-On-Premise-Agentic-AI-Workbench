@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
 MODELS=(qwen2.5:7b moondream nomic-embed-text)
-STEPS=9
+STEPS=10
 STEP=0
 
 if [[ -t 1 ]]; then
@@ -30,31 +30,45 @@ trap 'die "setup failed at line $LINENO. Fix the error above and re-run ./instal
 printf '%s\n' "${BOLD}AEGIS — Air-Gapped Engineering Intelligence System${OFF}"
 printf '%s\n' "${DIM}One-time setup. Needs internet for this run only.${OFF}"
 
-# ── 1. Ollama present? ───────────────────────────────────────────────────────
+# ── 1. OS / architecture ─────────────────────────────────────────────────────
+step "Detecting OS and architecture"
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+case "$OS" in
+  Linux)  PLATFORM="Linux";  DISTRO="$( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || echo "unknown" )" ;;
+  Darwin) PLATFORM="macOS";  DISTRO="$(sw_vers -productVersion 2>/dev/null || echo "unknown")" ;;
+  *) die "unsupported OS '$OS'. AEGIS supports Linux, macOS and Windows (use install.ps1 on Windows)." ;;
+esac
+ok "$PLATFORM ($DISTRO) on $ARCH"
+case "$ARCH" in
+  x86_64|amd64|arm64|aarch64) ;;
+  *) warn "untested architecture '$ARCH' — continuing anyway" ;;
+esac
+
+# ── 2. Ollama present? ───────────────────────────────────────────────────────
 step "Checking for Ollama"
 if command -v ollama >/dev/null 2>&1; then
   ok "Ollama already installed ($(command -v ollama))"
 else
   warn "Ollama not found — installing"
-  case "$(uname -s)" in
+  case "$OS" in
     Linux)
       command -v curl >/dev/null 2>&1 || die "curl is required to install Ollama. Install it (Arch: sudo pacman -S curl · Ubuntu: sudo apt install curl) and re-run."
       curl -fsSL https://ollama.com/install.sh | sh || die "Ollama install script failed. Install manually from https://ollama.com/download and re-run."
       ;;
     Darwin)
       if command -v brew >/dev/null 2>&1; then
-        brew install ollama || die "brew install ollama failed."
+        brew install ollama || die "brew install ollama failed. Install manually from https://ollama.com/download and re-run."
       else
-        die "Install Ollama from https://ollama.com/download (or install Homebrew first), then re-run ./install.sh"
+        die "Install Ollama from https://ollama.com/download (or install Homebrew first: https://brew.sh), then re-run ./install.sh"
       fi
       ;;
-    *) die "Unsupported OS '$(uname -s)'. Install Ollama manually from https://ollama.com/download, then re-run." ;;
   esac
   command -v ollama >/dev/null 2>&1 || die "Ollama still not on PATH after install. Open a new shell and re-run ./install.sh"
   ok "Ollama installed"
 fi
 
-# ── 2. Ollama service running? ───────────────────────────────────────────────
+# ── 3. Ollama service running? ───────────────────────────────────────────────
 step "Starting the Ollama service"
 wait_for_ollama() {
   for _ in $(seq 1 30); do
@@ -67,8 +81,11 @@ wait_for_ollama() {
 if ollama list >/dev/null 2>&1; then
   ok "Ollama is already running"
 else
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q '^ollama\.service'; then
+  if [[ "$OS" == "Linux" ]] && command -v systemctl >/dev/null 2>&1 \
+     && systemctl list-unit-files 2>/dev/null | grep -q '^ollama\.service'; then
     sudo systemctl start ollama || warn "systemctl start ollama failed — falling back to a background process"
+  elif [[ "$OS" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
+    brew services start ollama >/dev/null 2>&1 || true
   fi
   if ! ollama list >/dev/null 2>&1; then
     mkdir -p logs
@@ -79,7 +96,7 @@ else
   ok "Ollama is running"
 fi
 
-# ── 3. Models ────────────────────────────────────────────────────────────────
+# ── 4. Models ────────────────────────────────────────────────────────────────
 step "Pulling models (~6.5GB total — the only step that needs internet)"
 if command -v df >/dev/null 2>&1; then
   FREE_GB=$(df -Pk "$HOME" | awk 'NR==2 {print int($4/1048576)}')
@@ -98,7 +115,7 @@ for model in "${MODELS[@]}"; do
   fi
 done
 
-# ── 4. venv ──────────────────────────────────────────────────────────────────
+# ── 5. venv ──────────────────────────────────────────────────────────────────
 step "Creating the Python virtual environment"
 PY="$(command -v python3 || command -v python || true)"
 [[ -n "$PY" ]] || die "python3 not found. Install it (Arch: sudo pacman -S python · Ubuntu: sudo apt install python3 python3-venv) and re-run."
@@ -109,7 +126,7 @@ else
   ok "venv created ($(./venv/bin/python --version 2>&1))"
 fi
 
-# ── 5. Dependencies ──────────────────────────────────────────────────────────
+# ── 6. Dependencies ──────────────────────────────────────────────────────────
 step "Installing Python dependencies"
 ./venv/bin/python -m pip install --upgrade pip --quiet || warn "pip self-upgrade failed — continuing"
 # Download progress stays visible on a first install; the "already satisfied" wall
@@ -119,12 +136,49 @@ step "Installing Python dependencies"
   | { grep -vE '^Requirement already satisfied:' || true; }
 ok "dependencies installed"
 
-# ── 6. Local storage ─────────────────────────────────────────────────────────
+# ── 7. Local storage ─────────────────────────────────────────────────────────
 step "Creating local storage folders"
-mkdir -p data/embeddings data/chats logs docs temp
+mkdir -p data/embeddings data/chats data/chats/media logs docs temp
 ok "data/embeddings, data/chats, logs, docs, temp ready (all local, all gitignored)"
 
-# ── 7. RAG index ─────────────────────────────────────────────────────────────
+# ── 8. .env ──────────────────────────────────────────────────────────────────
+step "Creating .env from .env.example"
+if [[ -f .env ]]; then
+  ok ".env already exists — leaving your settings untouched"
+elif [[ -f .env.example ]]; then
+  cp .env.example .env
+  ok ".env created from .env.example"
+else
+  warn ".env.example missing — AEGIS will fall back to built-in defaults"
+fi
+
+# Guarantee the offline/telemetry block regardless of what the template carried.
+# core/__init__.py force-sets these at import, so this is documentation parity for
+# anyone who reads .env to see what the app does — not the enforcement mechanism.
+if [[ -f .env ]] && ! grep -q '^LANGCHAIN_TRACING_V2=' .env; then
+  cat >> .env <<'ENVEOF'
+
+# ── Telemetry / phone-home switches — all disabled ───────────────────────────
+# core/__init__.py force-sets every one of these at import time, before
+# langchain/langsmith can read them. Editing these lines cannot re-enable it.
+LANGCHAIN_TRACING_V2=false
+LANGCHAIN_TRACING=false
+LANGSMITH_TRACING=false
+LANGCHAIN_ENDPOINT=
+ANONYMIZED_TELEMETRY=false
+HF_HUB_OFFLINE=1
+TRANSFORMERS_OFFLINE=1
+SCARF_NO_ANALYTICS=true
+DO_NOT_TRACK=1
+STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+# Local chat history (one JSON file per session)
+CHATS_DIR=data/chats
+ENVEOF
+  ok "offline/telemetry flags ensured in .env"
+fi
+
+# ── 9. RAG index ─────────────────────────────────────────────────────────────
 step "Building the RAG index from docs/"
 if compgen -G "docs/*.pdf" >/dev/null || compgen -G "docs/*.txt" >/dev/null || compgen -G "docs/*.md" >/dev/null; then
   ./venv/bin/python -c "from core.rag import build_index; print(f'  indexed {build_index()} chunks')" \
@@ -134,15 +188,15 @@ else
   warn "no documents in docs/ — drop your SOPs there and run 'make index' (or rebuild from the app sidebar)"
 fi
 
-# ── 8. Verify ────────────────────────────────────────────────────────────────
+# ── 10. Verify ────────────────────────────────────────────────────────────────
 step "Running the verification suite"
 ./venv/bin/python test_aegis.py || die "test_aegis.py reported a failure — see the output above."
 
-# ── 9. Done ──────────────────────────────────────────────────────────────────
-step "Setup complete"
+# ── Done ─────────────────────────────────────────────────────────────────────
+# Not a numbered step — it is the summary of the ten above.
 cat <<EOF
 
-${GREEN}${BOLD}✅ AEGIS is ready — run ./run.sh to start${OFF}
+${GREEN}${BOLD}✅ AEGIS READY. Run: ./run.sh${OFF}
 
   ${BOLD}./run.sh${OFF}     start the app at http://127.0.0.1:8501
   ${BOLD}make test${OFF}    re-run the verification suite

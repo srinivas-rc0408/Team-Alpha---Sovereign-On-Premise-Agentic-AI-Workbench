@@ -63,9 +63,12 @@ if "session" not in st.session_state:
     st.session_state["session"] = history.new_session()
 
 
+STATUS_ICON = {"CRITICAL": "🔴", "WARNING": "🟠", "SAFE": "🟢"}
+
+
 def _load_session(chat_id: str):
     """Restore a past session: its last run repopulates the report panes."""
-    session = history.load_chat(chat_id)
+    session = history.load_session(chat_id)
     if not session:
         st.toast(f"Chat {chat_id} is no longer on disk.")
         return
@@ -81,6 +84,7 @@ def _load_session(chat_id: str):
             "loop_count": last.get("loop_count", 0),
             "network_audit": last.get("network_audit"),
             "context": (last.get("steps") or {}).get("context"),
+            "image_path": last.get("image_path"),
         }
         st.session_state["step_times"] = last.get("timing", {})
         st.session_state["restored_from"] = session["title"]
@@ -103,34 +107,85 @@ with st.sidebar:
     for warning in offline.get("warnings", []):
         st.caption(f"⚠️ {warning}")
 
+    if st.button("🔎 Privacy self-audit", use_container_width=True,
+                 help="Re-run all four offline checks now and show the raw network log"):
+        st.session_state["privacy_audit"] = offline_check.verify_offline()
+
+    audit_result = st.session_state.get("privacy_audit")
+    if audit_result:
+        with st.expander("Privacy self-audit result", expanded=True):
+            if audit_result["offline"]:
+                st.success("✅ No data left this machine.")
+            else:
+                st.error("❌ EXTERNAL CONNECTION DETECTED — see below.")
+
+            for name, check in audit_result["checks"].items():
+                st.write(f"{'✅' if check['ok'] else '❌'} **{name}**")
+
+            st.caption("Connections opened by AEGIS's own process tree:")
+            local = audit_result.get("local_connections") or []
+            external = audit_result.get("external_connections") or []
+            if local:
+                st.code("\n".join(local), language=None)
+                st.caption("All loopback — Ollama on 11434, this console on 8501.")
+            else:
+                st.code("(no sockets open at this instant)", language=None)
+            if external:
+                st.error("External:\n" + "\n".join(external))
+            else:
+                st.caption("External connections: none, now or in any recorded query.")
+            st.caption(f"Endpoints: " + ", ".join(
+                f"{k}={v['value']}" for k, v in audit_result["checks"]["endpoints"]["endpoints"].items()
+            ))
+
     st.divider()
     st.header("💬 Chat History")
     if st.button("➕ New Chat", use_container_width=True):
         st.session_state["session"] = history.new_session()
         for key in ("result", "step_times", "signed_off", "restored_from"):
             st.session_state.pop(key, None)
-        st.rerun()
+        # Deliberately no st.rerun(): the click already triggered this run, and the
+        # rest of the script renders the cleared state correctly. Calling rerun here
+        # would abort before the search box below is instantiated, and Streamlit
+        # discards widget state for widgets absent from the last completed run —
+        # silently wiping the user's search term while the box still displays it.
 
-    keyword = st.text_input("Search history", placeholder="pressure, P-201, SOP-402…")
-    chats = history.search_chats(keyword) if keyword.strip() else history.list_chats()
+    # Keyed so the value lives in session_state: without a key, a st.rerun() (New
+    # Chat, delete, load) resets the Python-side value to "" while the browser
+    # still shows the typed text — the list would silently stop matching the box.
+    keyword = st.text_input("🔍 Search history", placeholder="pressure, P-201, SOP-402…",
+                            key="history_search")
+    chats = history.search_sessions(keyword) if keyword.strip() else history.list_sessions()
+
+    total = history.session_count()
+    st.caption(f"**{total}** conversation{'s' if total != 1 else ''} stored locally"
+               + (f" · {len(chats)} matching" if keyword.strip() else ""))
 
     current_id = st.session_state["session"]["id"]
     if not chats:
-        st.caption("No saved chats yet — run a query to start one.")
-    for chat in chats[:40]:
-        marker = "▸ " if chat["id"] == current_id else ""
-        flag = " ⚠️" if chat["requires_approval"] else ""
-        label = f"{marker}{chat['title'][:42]}{flag}"
-        row, delete_col = st.columns([5, 1])
-        if row.button(label, key=f"chat_{chat['id']}", use_container_width=True):
-            _load_session(chat["id"])
-            st.rerun()
-        if delete_col.button("🗑", key=f"del_{chat['id']}", help="Delete this chat"):
-            history.delete_chat(chat["id"])
-            if chat["id"] == current_id:
-                st.session_state["session"] = history.new_session()
-            st.rerun()
-        row.caption(f"{chat['updated_at'][:16].replace('T', ' ')} · {chat['entry_count']} run(s)")
+        st.caption("No saved chats yet — run a query to start one."
+                   if not keyword.strip() else "No chats match that search.")
+
+    # Scrollable so a long history never pushes the rest of the sidebar off-screen;
+    # "content" lets a short list size itself instead of leaving dead space.
+    with st.container(height=340 if len(chats) > 4 else "content"):
+        for chat in chats[:200]:
+            marker = "▸ " if chat["id"] == current_id else ""
+            icon = STATUS_ICON.get(chat.get("status", "SAFE"), "🟢")
+            row, delete_col = st.columns([5, 1])
+            if row.button(f"{marker}{icon} {chat['title'][:40]}", key=f"chat_{chat['id']}",
+                          use_container_width=True, help=chat.get("preview") or chat["title"]):
+                _load_session(chat["id"])
+                st.rerun()
+            if delete_col.button("🗑", key=f"del_{chat['id']}", help="Delete this chat"):
+                history.delete_session(chat["id"])
+                if chat["id"] == current_id:
+                    st.session_state["session"] = history.new_session()
+                    for key in ("result", "step_times", "signed_off", "restored_from"):
+                        st.session_state.pop(key, None)
+                st.rerun()
+            row.caption(f"{chat['updated_at'][:16].replace('T', ' ')} · "
+                        f"{chat['entry_count']} run(s) · {chat.get('status', 'SAFE')}")
 
     st.divider()
     st.header("Knowledge base")
@@ -139,7 +194,7 @@ with st.sidebar:
             try:
                 st.success(f"Indexed {rag.build_index()} chunks.")
             except Exception as e:
-                st.error(str(e))
+                st.error(agent.friendly_error(e))
 
     st.divider()
     st.caption("System health")
@@ -191,14 +246,32 @@ with tab_ask:
     )
     img = st.file_uploader("Attach equipment/gauge photo (optional)", type=["png", "jpg", "jpeg"])
 
-    if st.button("Run AEGIS Analysis", type="primary") and query.strip():
+    MAX_QUERY_CHARS = 8000
+
+    run_clicked = st.button("Run AEGIS Analysis", type="primary")
+    if run_clicked and not query.strip():
+        st.warning("Type a question first, or pick one of the examples above.")
+    elif run_clicked and len(query) > MAX_QUERY_CHARS:
+        # A pasted whole document would blow past the model's context and time out
+        # after minutes of work; refuse fast and say what to do instead.
+        st.warning(
+            f"That query is {len(query):,} characters — the limit is {MAX_QUERY_CHARS:,}. "
+            "Shorten the question, and put the source document in `docs/` so AEGIS can "
+            "retrieve from it instead."
+        )
+    elif run_clicked:
         image_path = None
         if img:
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(img.name)[1])
-            tmp.write(img.read())
-            tmp.close()
-            image_path = tmp.name
-            st.image(img, width=320)
+            try:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(img.name)[1])
+                tmp.write(img.read())
+                tmp.close()
+                image_path = tmp.name
+                st.image(img, width=320)
+            except Exception as e:
+                # A corrupt or unreadable upload must not sink the text query.
+                st.warning(f"Could not read that image ({e}) — continuing without it.")
+                image_path = None
 
         st.caption("AEGIS is processing — all computation on-premise…")
         progress_slots = {step: st.empty() for step in PIPELINE_STEPS}
@@ -220,17 +293,25 @@ with tab_ask:
                     progress_slots[node_name].markdown(
                         f"✅ {STEP_LABELS[node_name]} ({step_times[node_name]}s)"
                     )
-        except RuntimeError as e:
-            st.error(str(e))
+        except Exception as e:
+            # Never show an operator a traceback — friendly_error ends in the exact
+            # command that fixes it, and the raw detail stays available on demand.
+            st.error(agent.friendly_error(e))
+            with st.expander("Technical detail (for support)"):
+                st.exception(e)
 
         if result:
             st.session_state["result"] = result
             st.session_state["step_times"] = step_times
             st.session_state["signed_off"] = False
             st.session_state.pop("restored_from", None)
-            history.record_run(
-                st.session_state["session"], result, cursor=cursor, timing=step_times
-            )
+            try:
+                history.save_turn(
+                    st.session_state["session"], result, cursor=cursor, timing=step_times
+                )
+            except OSError as e:
+                # The answer is already on screen; a failed write must not hide it.
+                st.warning(f"Could not save this run to history: {e}")
 
     result = st.session_state.get("result")
     if result:
@@ -294,6 +375,17 @@ with tab_ask:
                 arrow = "  │\n  ▼\n" if i > 0 else ""
                 st.text(f"{arrow}[{e['event']}] {e['hash'][:12]}… (prev {e['prev_hash'][:12]}…)")
 
+        if st.session_state["session"]["entries"]:
+            if st.button("📄 Export this session", help="Write a readable Markdown copy to data/chats/exports/"):
+                path = history.export_session(st.session_state["session"]["id"])
+                if path:
+                    st.success(f"Exported to `{path}`")
+                    with open(path, encoding="utf-8") as f:
+                        st.download_button("Download export", f.read(),
+                                           file_name=os.path.basename(path), mime="text/markdown")
+                else:
+                    st.warning("Nothing to export yet.")
+
 with tab_compare:
     st.caption("Compare two SOP/P&ID revisions and flag safety-critical changes.")
     c1, c2 = st.columns(2)
@@ -312,8 +404,8 @@ with tab_compare:
             try:
                 st.session_state["diff_sections"] = doc_diff.diff_documents(old_tmp.name, new_tmp.name)
                 st.session_state["diff_report"] = doc_diff.compare_documents(old_tmp.name, new_tmp.name)
-            except (RuntimeError, OSError) as e:
-                st.error(str(e))
+            except Exception as e:
+                st.error(agent.friendly_error(e))
 
     d = st.session_state.get("diff_sections")
     report = st.session_state.get("diff_report")

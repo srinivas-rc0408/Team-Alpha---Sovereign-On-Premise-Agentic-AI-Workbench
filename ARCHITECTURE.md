@@ -4,6 +4,54 @@ Deeper technical detail behind the README's summary table. See `README.md`
 first for the honest deck-vs-prototype mapping — this doc explains *how* the
 prototype side of that table actually works.
 
+## Data flow — where every byte goes
+
+Everything inside the dashed box is on the operator's machine. Nothing crosses
+it at runtime; the single arrow that ever leaves is the one-time model pull
+during install, drawn separately because it is the only exception.
+
+```
+   ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  THIS MACHINE  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+                                                                               
+   │   Operator                                                             │
+        │  query + optional photo                                            
+   │    ▼                                                                   │
+     ┌─────────────────────┐   HTTP 127.0.0.1:8501 (loopback, CORS+XSRF on)   
+   │ │  ui/app.py          │                                                 │
+     │  Streamlit console  │                                                  
+   │ └──────────┬──────────┘                                                 │
+                │                                                             
+   │            ▼                                                           │
+     ┌───────────────────────────────────────────────┐                        
+   │ │  core/agent.py — LangGraph state machine      │                       │
+     │                                               │                        
+   │ │  Plan → Vision → RAG → Calc → Safety → Reflect│──┐                    │
+     │    │       │      │      │       │        │   │  │ retry ≤2x           
+   │ └────┼───────┼──────┼──────┼───────┼────────┼───┘  │ (back to RAG)      │
+          │       │      │      │       │        └──────┘                     
+   │      │       │      │      │       │                                    │
+          │       │      │      │       └─► core/safety_rules.py             
+   │      │       │      │      │            (pure Python, no LLM)           │
+          │       │      │      └─► core/tools.py ─► Docker --network=none    
+   │      │       │      │                           (or AST-whitelist eval) │
+          │       │      └─► core/rag.py ─► FAISS + BM25 ◄── data/embeddings/ 
+   │      │       │                                                         │
+          │       └─► moondream ──┐                                          
+   │      └─► qwen2.5:7b ─────────┼─► Ollama daemon @ 127.0.0.1:11434       │
+                nomic-embed-text ─┘        (local model weights on disk)      
+   │                                                                        │
+        every node ──► core/audit.py ──► logs/audit.jsonl (SHA-256 chained)  
+   │    every run  ──► core/history.py ─► data/chats/*.json (atomic writes)  │
+        every run  ──► core/network_monitor.py ─► was anything external?      
+   │                   core/offline_check.py ──► refuses to start if so      │
+                                                                              
+   └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+
+   ONE-TIME ONLY, during install.sh / install.ps1:
+       ollama pull  ────────────────────────────────►  ollama.com  (~6.5GB)
+   After that the box above is closed. No runtime path crosses it.
+```
+
 ## The ReAct agent loop
 
 ```
@@ -169,3 +217,61 @@ come from the plant's own documents via RAG, not from the model's memory.
   assumes dedicated server-class GPU hardware. The measured numbers above are
   what a single consumer laptop GPU actually delivers, offered honestly
   rather than extrapolated from the deck's target hardware.
+
+## Local chat history (`core/history.py`)
+
+One JSON file per session under `data/chats/`, plus a derived `index.json` for
+fast listing and search. Each turn records the query, the attached image (copied
+into `data/chats/media/` so history stays self-contained after Streamlit's temp
+file is gone), all six node outputs, the deterministic safety verdict, the
+sign-off flag, the reasoning trace, per-step timings, the network audit, and the
+slice of audit-chain hashes that this specific run produced.
+
+Two properties matter more than the schema:
+
+**Writes are atomic.** `_write_atomic()` writes to a temp file in the same
+directory, `fsync`s it, then `os.replace()`s it into position — atomic on both
+POSIX and Windows. A crash mid-write leaves the previous good copy intact rather
+than a truncated file. The temp name carries a uuid *and* the pid: Streamlit
+serves concurrent sessions as threads of one process, so a pid-only name lets
+two simultaneous writers share a temp path and delete each other's file. That
+was a real bug, found by a 60-thread stress test, not a hypothetical.
+
+**The index is a cache, never the source of truth.** If `index.json` is missing,
+truncated or stale, `list_sessions()` rebuilds it from the session files. The
+cost of losing it is the speed of one listing, never the history itself. In-process
+index updates are serialised with a lock; across processes the worst case is a
+stale listing that the next rebuild repairs.
+
+## Offline enforcement (`core/offline_check.py`)
+
+Four independent checks, because each catches a failure the others cannot see:
+
+1. **endpoints** — every configured service URL resolves to loopback. Catches a
+   `.env` pointed at a remote Ollama, which would be a genuine leak. `0.0.0.0` is
+   treated as local-but-warned: as a *destination* it reaches this host on Linux
+   and fails outright on macOS/Windows, so `core/__init__.py` rewrites it to
+   `127.0.0.1` at import rather than letting it break portability silently.
+2. **telemetry** — the phone-home switches are still disabled at the moment of
+   the check, not merely at startup.
+3. **live** — external sockets open right now in this process tree, via
+   `core/network_monitor.py`.
+4. **history** — every `network_audit` entry ever written to the audit log was
+   clean. This is what makes "nothing ever left" a claim about the whole recorded
+   history rather than about this instant; a leak that happened an hour ago and
+   has since closed is invisible to a live snapshot but permanent in the log.
+
+`assert_offline()` raises `OfflineViolation` instead of returning a verdict, and
+`run.sh` / `run.ps1` call it before opening the console. An air-gapped tool that
+merely *reports* a leak has already leaked — the only useful behaviour is to
+refuse to start.
+
+## Error handling (`core/agent.py:friendly_error`)
+
+A refinery technician reading a Python traceback learns nothing actionable, so
+every recognised failure is translated into the exact command that fixes it:
+a missing model becomes `ollama pull <the model name parsed from the error>`,
+an unreachable daemon becomes `ollama serve`, a corrupt index becomes
+`make index`, an empty knowledge base names the folder to fill. Unrecognised
+exceptions still surface their real message rather than a generic apology, and
+the UI keeps the full traceback one expander away for support.

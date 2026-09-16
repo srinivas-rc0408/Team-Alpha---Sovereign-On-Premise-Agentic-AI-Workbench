@@ -78,9 +78,16 @@ def check_telemetry() -> dict:
 
 
 def check_live_connections() -> dict:
-    """External sockets open in this process tree right now."""
+    """Every socket open in this process tree right now, split into the loopback
+    ones we expect (Ollama on 11434, Streamlit on 8501) and anything external."""
     report = network_monitor.report(network_monitor.snapshot_io())
-    return {"ok": report["clean"], "external_connections": report["external_connections"]}
+    return {
+        "ok": report["clean"],
+        "external_connections": report["external_connections"],
+        "all_connections": report["connections"],
+        "local_connections": [c for c in report["connections"]
+                              if c not in report["external_connections"]],
+    }
 
 
 def check_audit_history(path: str = None) -> dict:
@@ -106,10 +113,46 @@ def verify_offline(path: str = None) -> dict:
     return {
         "offline": all(c["ok"] for c in checks.values()),
         "external_connections": checks["live"]["external_connections"],
+        "local_connections": checks["live"]["local_connections"],
         "queries_audited": checks["history"]["queries_audited"],
         "warnings": checks["endpoints"]["warnings"],
         "checks": checks,
     }
+
+
+class OfflineViolation(RuntimeError):
+    """Raised when something in this process is reaching outside the machine."""
+
+
+def assert_offline(path: str = None) -> dict:
+    """verify_offline(), but refuses to continue instead of returning a verdict.
+    Used by run.sh at startup: an air-gapped tool that merely *reports* a leak has
+    already leaked, so the only useful behaviour is to stop."""
+    result = verify_offline(path)
+    if result["offline"]:
+        return result
+
+    failed = [name for name, c in result["checks"].items() if not c["ok"]]
+    detail = []
+    if result["external_connections"]:
+        detail.append("external connections: " + ", ".join(result["external_connections"]))
+    bad_endpoints = [f"{v}={d['value']}" for v, d in result["checks"]["endpoints"]["endpoints"].items()
+                     if not d["loopback"]]
+    if bad_endpoints:
+        detail.append("non-loopback endpoints: " + ", ".join(bad_endpoints))
+    if result["checks"]["telemetry"]["mismatched"]:
+        detail.append("telemetry re-enabled: " + ", ".join(result["checks"]["telemetry"]["mismatched"]))
+    if result["checks"]["history"]["leaking_queries"]:
+        detail.append(f"{result['checks']['history']['leaking_queries']} past queries opened "
+                      f"external connections (first at {result['checks']['history']['first_leak_ts']})")
+
+    raise OfflineViolation(
+        "AEGIS is NOT air-gapped — refusing to continue.\n"
+        f"  failed checks: {', '.join(failed)}\n"
+        + "".join(f"  {d}\n" for d in detail)
+        + "  Fix: set OLLAMA_HOST to http://localhost:11434 in .env and ensure no\n"
+          "  proxy/VPN is redirecting localhost traffic, then start AEGIS again."
+    )
 
 
 if __name__ == "__main__":  # ponytail: self-check — loopback parsing + aggregate verdict
@@ -122,6 +165,25 @@ if __name__ == "__main__":  # ponytail: self-check — loopback parsing + aggreg
     assert check_telemetry()["ok"], check_telemetry()["mismatched"]
     result = verify_offline()
     assert result["checks"]["endpoints"]["ok"], result["checks"]["endpoints"]
+    assert assert_offline() is result or True  # must not raise when clean
+
+    # assert_offline must actually refuse when an endpoint points off-machine.
+    _saved = os.environ.get("OLLAMA_HOST")
+    os.environ["OLLAMA_HOST"] = "http://api.example.com:11434"
+    try:
+        assert_offline()
+    except OfflineViolation as e:
+        assert "NOT air-gapped" in str(e) and "api.example.com" in str(e), str(e)
+    else:
+        raise AssertionError("assert_offline did not refuse a non-loopback endpoint")
+    finally:
+        if _saved is None:
+            os.environ.pop("OLLAMA_HOST", None)
+        else:
+            os.environ["OLLAMA_HOST"] = _saved
+
     print(f"offline_check ok — offline={result['offline']}, "
           f"external={result['external_connections']}, "
-          f"network_audits_reviewed={result['queries_audited']}")
+          f"local={result['local_connections'] or '[]'}, "
+          f"network_audits_reviewed={result['queries_audited']}, "
+          f"assert_offline refuses non-loopback")

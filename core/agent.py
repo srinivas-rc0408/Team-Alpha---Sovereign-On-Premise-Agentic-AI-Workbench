@@ -7,6 +7,7 @@ thin, capped at MAX_LOOPS retries so the agent can never run away.
 """
 import json
 import os
+import re
 import time
 from typing import Optional, TypedDict
 
@@ -278,6 +279,62 @@ def _check_ollama():
         ) from e
 
 
+_MODEL_VARS = ("LLM_MODEL", "VISION_MODEL", "EMBED_MODEL")
+
+
+def friendly_error(exc: Exception) -> str:
+    """Turn an exception into something an operator can act on.
+
+    A refinery technician reading a Python traceback learns nothing they can use;
+    every branch here ends in the exact command that fixes the problem. Anything
+    unrecognised still reports its real message rather than a generic apology.
+    """
+    text = str(exc)
+    low = text.lower()
+
+    if "not found" in low and "model" in low:
+        # Recover the offending model name so the fix is copy-pasteable.
+        match = re.search(r"model ['\"]?([\w.:\-/]+)['\"]? not found", text)
+        model = match.group(1) if match else next(
+            (os.getenv(v) for v in _MODEL_VARS if os.getenv(v) and os.getenv(v) in text), None
+        )
+        if model:
+            return (f"The model '{model}' is not installed in Ollama.\n\n"
+                    f"Fix — run this, then try again:\n\n    ollama pull {model}")
+        return ("A required model is not installed in Ollama.\n\n"
+                "Fix — run:\n\n    ollama pull qwen2.5:7b\n"
+                "    ollama pull moondream\n    ollama pull nomic-embed-text")
+
+    if any(s in low for s in ("connection refused", "cannot reach ollama", "failed to connect",
+                              "connection error", "max retries", "connectionerror")):
+        host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        return (f"Cannot reach Ollama at {host}.\n\n"
+                "Fix — start it, then try again:\n\n    ollama serve")
+
+    if "unreadable or corrupted" in low or "index" in low and "corrupt" in low:
+        return (f"{text}\n\n"
+                "Fix — rebuild the index from the sidebar, or run:\n\n    make index")
+
+    if "no relevant documents" in low or "no .pdf/.txt/.md documents" in low:
+        docs = os.getenv("DOCS_DIR", "docs")
+        return (f"The knowledge base is empty — no documents found in {docs}/.\n\n"
+                f"Fix — copy your SOPs (PDF/TXT/MD) into {docs}/, then rebuild the index "
+                "from the sidebar (or run: make index)")
+
+    if isinstance(exc, MemoryError) or "out of memory" in low or "cuda" in low:
+        return ("The machine ran out of memory loading the model.\n\n"
+                "Fix — close other applications, or switch to a smaller model by setting "
+                "LLM_MODEL in .env (e.g. LLM_MODEL=qwen2.5:3b) and running: ollama pull qwen2.5:3b")
+
+    if isinstance(exc, (PermissionError, OSError)) and any(
+        s in low for s in ("permission denied", "read-only")
+    ):
+        return (f"AEGIS could not write to disk: {text}\n\n"
+                "Fix — check you own the project folder and it is not read-only.")
+
+    return f"{type(exc).__name__}: {text}"
+
+
 def run_streaming(query: str, image_path: str = None):
     """Yields (node_name, elapsed_seconds, state_so_far) as each node actually
     completes, via LangGraph's .stream() — real incremental progress, not an
@@ -323,7 +380,7 @@ if __name__ == "__main__":
         sys.exit(1)
     try:
         result = run(" ".join(sys.argv[1:]))
-    except RuntimeError as e:
-        print(f"Error: {e}")
+    except Exception as e:
+        print(f"\nAEGIS could not complete that query.\n\n{friendly_error(e)}\n")
         sys.exit(1)
     print(result["answer"])

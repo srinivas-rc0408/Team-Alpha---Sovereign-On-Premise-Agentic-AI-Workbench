@@ -81,15 +81,26 @@ def _store():
         path = _index_dir()
         if not os.path.exists(os.path.join(path, "index.faiss")):
             return None
-        _STORE["vs"] = FAISS.load_local(
-            path, _embeddings(), allow_dangerous_deserialization=True
-        )
-        # trusted: bm25.pkl is only ever produced by build_index() on this same
-        # machine, next to the FAISS index it already trusts via the flag above.
-        with open(_bm25_path(), "rb") as f:
-            bm25_data = pickle.load(f)
-        _STORE["bm25"] = bm25_data["bm25"]
-        _STORE["chunks"] = bm25_data["chunks"]
+        try:
+            _STORE["vs"] = FAISS.load_local(
+                path, _embeddings(), allow_dangerous_deserialization=True
+            )
+            # trusted: bm25.pkl is only ever produced by build_index() on this same
+            # machine, next to the FAISS index it already trusts via the flag above.
+            with open(_bm25_path(), "rb") as f:
+                bm25_data = pickle.load(f)
+            _STORE["bm25"] = bm25_data["bm25"]
+            _STORE["chunks"] = bm25_data["chunks"]
+        except Exception as e:
+            # A truncated or half-written index surfaces as a raw FAISS/pickle error
+            # that means nothing to an operator. The index is a derived artifact —
+            # it is always safe to rebuild — so say exactly that.
+            _STORE.update({"vs": None, "bm25": None, "chunks": None})
+            raise RuntimeError(
+                f"The search index in {path} is unreadable or corrupted ({type(e).__name__}). "
+                "It can be rebuilt safely — no source documents are lost. "
+                "Rebuild it from the sidebar, or run: make index"
+            ) from e
     return _STORE["vs"]
 
 

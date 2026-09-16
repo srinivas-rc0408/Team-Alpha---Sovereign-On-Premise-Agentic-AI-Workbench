@@ -52,13 +52,15 @@ fi
 python - <<'PY' || die "offline verification failed — refusing to start. See the failing check above."
 from core import offline_check
 
-r = offline_check.verify_offline()
-for name, c in r["checks"].items():
-    print(f"  {'✓' if c['ok'] else '✗'} {name}: {'ok' if c['ok'] else c}")
+try:
+    r = offline_check.assert_offline()
+except offline_check.OfflineViolation as e:
+    print(e)
+    raise SystemExit(1)
+for name in r["checks"]:
+    print(f"  ✓ {name}")
 for w in r.get("warnings", []):
     print(f"  ! {w}")
-if not r["offline"]:
-    raise SystemExit(1)
 print(f"  ✓ offline verified — 0 external connections, "
       f"{r['queries_audited']} past queries audited clean")
 PY
@@ -79,9 +81,24 @@ fi
 # Belt-and-braces alongside .streamlit/config.toml — neither alone should be trusted.
 export STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
+URL="http://127.0.0.1:${PORT}"
+
+# Streamlit runs headless (see .streamlit/config.toml), so open the browser here
+# once the server is actually accepting connections. Backgrounded so a machine
+# with no browser (a headless plant server) still starts normally.
+(
+  for _ in $(seq 1 20); do
+    if command -v curl >/dev/null 2>&1 && curl -sf -o /dev/null "$URL"; then break; fi
+    sleep 1
+  done
+  if command -v xdg-open >/dev/null 2>&1; then xdg-open "$URL" >/dev/null 2>&1
+  elif command -v open >/dev/null 2>&1; then open "$URL" >/dev/null 2>&1
+  fi
+) &
+
 cat <<EOF
 
-${GREEN}${BOLD}AEGIS is live → http://127.0.0.1:${PORT}${OFF}
+${GREEN}${BOLD}AEGIS is live → ${URL}${OFF}
 
 ${DIM}Bound to loopback only — not reachable from the plant LAN.
 Chats: data/chats/ · Index: data/embeddings/ · Audit log: logs/audit.jsonl

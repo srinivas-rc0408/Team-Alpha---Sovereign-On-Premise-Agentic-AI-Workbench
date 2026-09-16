@@ -6,14 +6,26 @@ one. That transparency is the point in an air-gapped plant — an operator's
 question log is exactly the kind of thing that must never end up in a service
 someone else can read.
 
-Each session file holds the full record of every run in it: the query, the six
+Layout:
+    data/chats/index.json        fast listing/search without opening every session
+    data/chats/<id>.json         the full record of one session
+    data/chats/media/<id>/       images attached to that session, copied in
+    data/chats/exports/          human-readable exports produced on demand
+
+Every session file holds the full record of each run in it: the query, the six
 node results, the deterministic safety verdict, the sign-off flag, the reasoning
 trace, the network audit, and the audit-log hashes that run produced — enough to
 reconstruct the whole report later without re-running the model.
+
+index.json is a derived cache, never the source of truth. If it is missing,
+truncated or stale it is rebuilt from the session files, so a crash mid-write
+can cost at most the speed of one listing, never the history itself.
 """
 import json
 import os
 import re
+import shutil
+import threading
 import uuid
 from datetime import datetime, timezone
 
@@ -25,21 +37,63 @@ _ID_RE = re.compile(r"^\d{8}T\d{6}_[0-9a-f]{8}$")
 
 _STEP_KEYS = ("plan", "vision", "context", "calc", "safety", "reflection", "answer")
 
+_CRITICAL = {"CRITICAL", "EXCEEDS", "BELOW_MINIMUM"}
+_WARNING = {"CAUTION"}
 
+INDEX_NAME = "index.json"
+
+
+# ── paths ────────────────────────────────────────────────────────────────────
 def chats_dir() -> str:
     return os.getenv("CHATS_DIR", "data/chats")
 
 
-def _path(chat_id: str) -> str:
+def media_dir(session_id: str) -> str:
+    return os.path.join(chats_dir(), "media", _checked(session_id))
+
+
+def _checked(chat_id: str) -> str:
     if not _ID_RE.match(chat_id or ""):
         raise ValueError(f"invalid chat id: {chat_id!r}")
-    return os.path.join(chats_dir(), f"{chat_id}.json")
+    return chat_id
+
+
+def _path(chat_id: str) -> str:
+    return os.path.join(chats_dir(), f"{_checked(chat_id)}.json")
+
+
+def _index_path() -> str:
+    return os.path.join(chats_dir(), INDEX_NAME)
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _write_atomic(path: str, payload) -> str:
+    """Write to a temp file in the same directory, then rename. os.replace is
+    atomic on POSIX and on Windows, so a reader never sees a half-written file
+    and a crash cannot truncate the previous good copy.
+
+    The temp name carries a uuid as well as the pid: Streamlit serves concurrent
+    sessions as threads of ONE process, so a pid-only name lets two simultaneous
+    writers share a temp path — and the first to finish deletes the other's file
+    out from under it."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return path
+
+
+# ── sessions ─────────────────────────────────────────────────────────────────
 def new_session() -> dict:
     """An empty session. Not written to disk until it has something to save."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -54,7 +108,7 @@ def new_session() -> dict:
 
 def audit_cursor() -> int:
     """Number of audit entries written so far. Take this before an agent run and
-    pass it to record_run() to attach exactly that run's hash-chain links."""
+    pass it to save_turn() to attach exactly that run's hash-chain links."""
     return len(audit.read())
 
 
@@ -65,12 +119,38 @@ def _hashes_since(cursor: int) -> list[dict]:
     ]
 
 
-def record_run(session: dict, result: dict, cursor: int = None, timing: dict = None) -> dict:
-    """Append one completed agent run to `session` and persist it. Returns the session."""
+def status_of(entry: dict) -> str:
+    """SAFE / WARNING / CRITICAL for the sidebar badge."""
+    verdict = (entry.get("safety") or {}).get("status")
+    if verdict in _CRITICAL:
+        return "CRITICAL"
+    if verdict in _WARNING or entry.get("requires_approval"):
+        return "WARNING"
+    return "SAFE"
+
+
+def store_media(session_id: str, source_path: str) -> str | None:
+    """Copy an uploaded image into the session's own folder so the history stays
+    self-contained — the Streamlit temp file it came from is gone on restart."""
+    if not source_path or not os.path.exists(source_path):
+        return None
+    try:
+        target_dir = media_dir(session_id)
+        os.makedirs(target_dir, exist_ok=True)
+        target = os.path.join(target_dir, f"{uuid.uuid4().hex[:8]}_{os.path.basename(source_path)}")
+        shutil.copy2(source_path, target)
+        return target
+    except OSError:
+        return None  # a failed image copy must never lose the run it belongs to
+
+
+def save_turn(session: dict, result: dict, cursor: int = None, timing: dict = None) -> dict:
+    """Append one completed agent run to `session` and persist it immediately."""
+    image_path = store_media(session["id"], result.get("image_path"))
     entry = {
         "ts": _now(),
         "query": result.get("query", ""),
-        "image_path": result.get("image_path"),
+        "image_path": image_path,
         "answer": result.get("answer", ""),
         "steps": {k: result.get(k) for k in _STEP_KEYS},
         "safety": result.get("safety"),
@@ -81,94 +161,234 @@ def record_run(session: dict, result: dict, cursor: int = None, timing: dict = N
         "timing": timing or {},
         "audit_hashes": _hashes_since(cursor) if cursor is not None else [],
     }
+    entry["status"] = status_of(entry)
     session["entries"].append(entry)
     session["updated_at"] = entry["ts"]
     if session.get("title", "New chat") == "New chat" and entry["query"]:
         session["title"] = entry["query"][:70] + ("…" if len(entry["query"]) > 70 else "")
-    save_chat(session)
+    save_session(session)
     return session
 
 
-def save_chat(session: dict) -> str:
-    """Write the session atomically: a crash mid-write can't leave a truncated
-    file where a readable history used to be."""
-    os.makedirs(chats_dir(), exist_ok=True)
-    path = _path(session["id"])
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(session, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, path)
+def save_session(session: dict) -> str:
+    path = _write_atomic(_path(session["id"]), session)
+    _index_upsert(_summary(session))
     return path
 
 
-def load_chat(chat_id: str) -> dict | None:
+def load_session(chat_id: str) -> dict | None:
     path = _path(chat_id)
     if not os.path.exists(path):
         return None
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
+def delete_session(chat_id: str) -> bool:
+    path = _path(chat_id)
+    existed = os.path.exists(path)
+    if existed:
+        os.remove(path)
+    shutil.rmtree(media_dir(chat_id), ignore_errors=True)
+    _index_remove(chat_id)
+    return existed
+
+
+# ── index ────────────────────────────────────────────────────────────────────
 def _summary(session: dict) -> dict:
-    last = session["entries"][-1] if session["entries"] else {}
+    entries = session.get("entries", [])
+    last = entries[-1] if entries else {}
+    first_query = next((e.get("query", "") for e in entries if e.get("query")), "")
     return {
         "id": session["id"],
         "title": session.get("title", "New chat"),
+        "preview": (first_query[:120] + "…") if len(first_query) > 120 else first_query,
         "created_at": session.get("created_at", ""),
         "updated_at": session.get("updated_at", ""),
-        "entry_count": len(session["entries"]),
-        "requires_approval": any(e.get("requires_approval") for e in session["entries"]),
+        "entry_count": len(entries),
+        "requires_approval": any(e.get("requires_approval") for e in entries),
+        "status": last.get("status") or (status_of(last) if last else "SAFE"),
         "last_status": (last.get("safety") or {}).get("status"),
     }
 
 
-def list_chats() -> list[dict]:
-    """Session summaries, newest first. ponytail: reads every file each call —
-    fine for the thousands a single operator console accumulates; add an index
-    file if that ever stops being true."""
+def _read_index() -> list[dict] | None:
+    try:
+        with open(_index_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("sessions"), list):
+            return data["sessions"]
+    except (json.JSONDecodeError, OSError, TypeError):
+        pass
+    return None  # missing or corrupt — caller rebuilds from the session files
+
+
+def _write_index(sessions: list[dict]) -> None:
+    ordered = sorted(sessions, key=lambda s: s.get("updated_at", ""), reverse=True)
+    _write_atomic(_index_path(), {"version": 1, "updated_at": _now(), "sessions": ordered})
+
+
+def rebuild_index() -> list[dict]:
+    """Derive the index from the session files on disk — the authoritative copy."""
     directory = chats_dir()
-    if not os.path.isdir(directory):
-        return []
-    sessions = []
-    for name in os.listdir(directory):
-        if not name.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(directory, name), encoding="utf-8") as f:
-                sessions.append(_summary(json.load(f)))
-        except (json.JSONDecodeError, KeyError, OSError):
-            continue  # a corrupt file shouldn't hide the rest of the history
-    return sorted(sessions, key=lambda s: s["updated_at"], reverse=True)
+    summaries = []
+    if os.path.isdir(directory):
+        for name in sorted(os.listdir(directory)):
+            if not name.endswith(".json") or name == INDEX_NAME:
+                continue
+            try:
+                with open(os.path.join(directory, name), encoding="utf-8") as f:
+                    summaries.append(_summary(json.load(f)))
+            except (json.JSONDecodeError, KeyError, OSError):
+                continue  # one corrupt session must not hide the rest
+    _write_index(summaries)
+    return sorted(summaries, key=lambda s: s["updated_at"], reverse=True)
 
 
-def search_chats(keyword: str) -> list[dict]:
-    """Case-insensitive substring match over queries and answers, newest first."""
+# Updating the index is read-modify-write, so two concurrent writers can each
+# read the pre-update list and the second write drops the first one's entry.
+# ponytail: process-wide lock — covers Streamlit's threads, which is where the
+# races actually happen. Two separate AEGIS processes could still interleave, and
+# the cost there is a stale listing that rebuild_index() repairs, never lost chats
+# (the session files themselves are written independently of this lock).
+_INDEX_LOCK = threading.Lock()
+
+
+def _index_upsert(summary: dict) -> None:
+    with _INDEX_LOCK:
+        sessions = _read_index()
+        if sessions is None:
+            rebuild_index()
+            return
+        sessions = [s for s in sessions if s.get("id") != summary["id"]] + [summary]
+        _write_index(sessions)
+
+
+def _index_remove(chat_id: str) -> None:
+    with _INDEX_LOCK:
+        sessions = _read_index()
+        if sessions is None:
+            rebuild_index()
+            return
+        _write_index([s for s in sessions if s.get("id") != chat_id])
+
+
+def list_sessions() -> list[dict]:
+    """Session summaries, newest first, served from index.json when it is usable."""
+    sessions = _read_index()
+    if sessions is None:
+        return rebuild_index()
+    return sorted(sessions, key=lambda s: s.get("updated_at", ""), reverse=True)
+
+
+def session_count() -> int:
+    return len(list_sessions())
+
+
+def search_sessions(keyword: str) -> list[dict]:
+    """Case-insensitive match over title/preview first (index-only, no file reads),
+    falling back to the full session text so older or longer chats still match."""
     kw = (keyword or "").strip().lower()
     if not kw:
-        return list_chats()
+        return list_sessions()
     hits = []
-    for summary in list_chats():
-        session = load_chat(summary["id"])
+    for summary in list_sessions():
+        if kw in summary.get("title", "").lower() or kw in summary.get("preview", "").lower():
+            hits.append(summary)
+            continue
+        session = load_session(summary["id"])
         if not session:
             continue
         haystack = " ".join(
-            f"{e.get('query', '')} {e.get('answer', '')}" for e in session["entries"]
+            f"{e.get('query', '')} {e.get('answer', '')}" for e in session.get("entries", [])
         ).lower()
-        if kw in haystack or kw in summary["title"].lower():
+        if kw in haystack:
             hits.append(summary)
     return hits
 
 
-def delete_chat(chat_id: str) -> bool:
-    path = _path(chat_id)
-    if not os.path.exists(path):
-        return False
-    os.remove(path)
-    return True
+def export_session(chat_id: str, out_dir: str = None) -> str | None:
+    """Write one readable Markdown file containing the whole session — the form an
+    engineer can attach to a work order or hand to an auditor."""
+    session = load_session(chat_id)
+    if not session:
+        return None
+    out_dir = out_dir or os.path.join(chats_dir(), "exports")
+    os.makedirs(out_dir, exist_ok=True)
+
+    lines = [
+        f"# AEGIS session — {session.get('title', chat_id)}",
+        "",
+        f"- Session id: `{session['id']}`",
+        f"- Created: {session.get('created_at', '')}",
+        f"- Last updated: {session.get('updated_at', '')}",
+        f"- Runs: {len(session.get('entries', []))}",
+        "",
+        "> Generated locally by AEGIS. No part of this session left the machine.",
+        "",
+    ]
+    for i, e in enumerate(session.get("entries", []), 1):
+        safety = e.get("safety") or {}
+        lines += [
+            f"## Run {i} — {e.get('ts', '')}",
+            "",
+            f"**Status:** {e.get('status', status_of(e))}",
+            "",
+            "### Query", "", e.get("query", "_(none)_"), "",
+        ]
+        if e.get("image_path"):
+            lines += [f"**Attached image:** `{e['image_path']}`", ""]
+        lines += ["### Answer", "", e.get("answer", "_(none)_"), ""]
+        if safety:
+            lines += [
+                "### Deterministic safety verdict", "",
+                f"- Status: **{safety.get('status')}**",
+                f"- Severity: {safety.get('severity')}",
+                f"- Overage: {safety.get('overage')}",
+                f"- Action: {safety.get('action')}",
+                "",
+            ]
+        lines += [
+            f"**Requires supervisor sign-off:** {'yes' if e.get('requires_approval') else 'no'}",
+            "",
+            "### Reasoning trace", "",
+            *(f"- {t}" for t in e.get("trace", [])),
+            "",
+            "### Timings", "",
+            *(f"- {k}: {v}s" for k, v in (e.get("timing") or {}).items()),
+            "",
+            "### Audit hash chain", "",
+            *(f"- `{h['event']}` → `{h['hash'][:16]}…` (prev `{h['prev_hash'][:16]}…`)"
+              for h in e.get("audit_hashes", [])),
+            "",
+        ]
+        net = e.get("network_audit") or {}
+        if net:
+            lines += [
+                "### Network audit", "",
+                f"- External connections: {len(net.get('external_connections', []))} "
+                f"({'clean' if net.get('clean') else 'LEAK DETECTED'})",
+                "",
+            ]
+    path = os.path.join(out_dir, f"{session['id']}.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return path
 
 
-if __name__ == "__main__":  # ponytail: self-check — round-trip, search, traversal guard
-    import shutil
+# Names the UI and earlier code already use.
+record_run = save_turn
+save_chat = save_session
+load_chat = load_session
+list_chats = list_sessions
+search_chats = search_sessions
+delete_chat = delete_session
+
+
+if __name__ == "__main__":  # ponytail: self-check — round-trip, index, search, traversal, export
     import tempfile
 
     tmpdir = tempfile.mkdtemp()
@@ -178,33 +398,46 @@ if __name__ == "__main__":  # ponytail: self-check — round-trip, search, trave
     cursor = audit_cursor()
     audit.log("answer", {"chars": 12})
     s = new_session()
-    record_run(s, {
+    save_turn(s, {
         "query": "Pressure reading is 18.4 bar, safe limit 15 bar.",
         "answer": "Yes — this exceeds the stated limit.",
-        "safety": {"status": "CAUTION"},
+        "safety": {"status": "CAUTION", "severity": "medium", "overage": 3.4, "action": "Monitor."},
         "requires_approval": True,
         "trace": ["PLAN", "ANSWER"],
     }, cursor=cursor, timing={"total": 21.5})
 
-    reloaded = load_chat(s["id"])
+    reloaded = load_session(s["id"])
     assert reloaded["entries"][0]["answer"] == "Yes — this exceeds the stated limit."
     assert reloaded["entries"][0]["audit_hashes"], "run's audit hashes not captured"
+    assert reloaded["entries"][0]["status"] == "WARNING", reloaded["entries"][0]["status"]
     assert reloaded["title"].startswith("Pressure reading")
 
-    assert [c["id"] for c in list_chats()] == [s["id"]]
-    assert search_chats("18.4 bar") and not search_chats("no such text")
-    assert search_chats("")  # empty keyword falls back to the full list
+    # index.json exists, is used, and survives corruption by rebuilding
+    assert os.path.exists(_index_path()), "index.json not written"
+    assert [c["id"] for c in list_sessions()] == [s["id"]]
+    open(_index_path(), "w").write("{ this is not json")
+    assert [c["id"] for c in list_sessions()] == [s["id"]], "corrupt index not rebuilt"
+    assert _read_index() is not None, "index not repaired after rebuild"
 
-    for bad in ("../../etc/passwd", "not-an-id", ""):
+    assert search_sessions("18.4 bar") and not search_sessions("no such text")
+    assert search_sessions("")  # empty keyword falls back to the full list
+    assert session_count() == 1
+
+    exported = export_session(s["id"])
+    assert exported and os.path.exists(exported)
+    body = open(exported, encoding="utf-8").read()
+    assert "18.4 bar" in body and "CAUTION" in body and "Audit hash chain" in body
+
+    for bad in ("../../etc/passwd", "..", "not-an-id", "", "20260916T000000_zzzzzzzz/../x"):
         try:
-            load_chat(bad)
+            load_session(bad)
         except ValueError:
             pass
         else:
             raise AssertionError(f"traversal guard missed {bad!r}")
 
-    assert delete_chat(s["id"]) and not delete_chat(s["id"])
-    assert list_chats() == []
+    assert delete_session(s["id"]) and not delete_session(s["id"])
+    assert list_sessions() == []
 
     shutil.rmtree(tmpdir)
-    print("history ok — round-trip, audit hashes, search, traversal guard, delete")
+    print("history ok — round-trip, index rebuild, search, export, traversal guard, delete")

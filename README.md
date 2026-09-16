@@ -4,7 +4,8 @@
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 ![SIH 2026](https://img.shields.io/badge/SIH-2026-orange)
 ![Air-Gapped](https://img.shields.io/badge/network-air--gapped-black)
-![Status](https://img.shields.io/badge/status-prototype-yellow)
+![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
+![No API Keys](https://img.shields.io/badge/API%20keys-none-success)
 
 SIH26117 · Team Alpha · Sovereign On-Premise Agentic AI Workbench using
 Open-Weight Multimodal LLMs for Confidential Industrial Work.
@@ -13,8 +14,10 @@ AEGIS is a local AI assistant for refinery operators: it answers questions
 grounded in your own SOPs, verifies the arithmetic in a sandbox, judges safety
 thresholds with deterministic code rather than model opinion, and gates
 safety-critical findings behind a named human sign-off. Every model, document,
-index, chat and audit record stays on the machine it runs on — nothing is sent
-anywhere, ever.
+index, chat and audit record stays on the machine it runs on — there are no API
+keys, no cloud services, and nothing is ever sent anywhere.
+
+![AEGIS console](screenshots/aegis-ui.png)
 
 ---
 
@@ -22,47 +25,64 @@ anywhere, ever.
 
 | | Minimum | Notes |
 |---|---|---|
-| GPU | 4GB VRAM (or none) | With less VRAM Ollama offloads layers to CPU — slower, still works |
 | RAM | 16GB | 8GB runs but swaps heavily under `qwen2.5:7b` |
+| GPU | 4GB VRAM, or none | With less VRAM Ollama offloads layers to CPU — slower, still works |
 | Disk | ~8GB free | Model weights (~6.5GB) + index + history |
-| OS | Linux (Arch/Ubuntu) or macOS | The installer detects and adapts |
-| Python | 3.10+ | Installer creates its own venv |
+| OS | Windows 10/11, Linux, or macOS | A dedicated installer for each |
+| Python | 3.10 or newer | The installer creates its own isolated venv |
 
-Reference machine for the measured timings in ARCHITECTURE.md: i7-11800H,
-RTX 3050 Ti (4GB), 16GB RAM, Arch Linux — roughly 20–60s per full agent run.
+Reference machine for the measured timings below: ASUS TUF, i7-11800H,
+RTX 3050 Ti (4GB), 16GB RAM, Arch Linux — roughly 10–60s per query.
 
-## ⚠️ The one honest note about internet
+---
 
-**First-time setup pulls ~6.5GB of models and needs internet ONCE. After that,
-AEGIS runs 100% offline.** You can unplug the network permanently after
-`./install.sh` finishes and every feature keeps working. `run.sh` refuses to
-start if any configured endpoint points off-machine.
+> ## ⚠️ The one honest note about internet
+>
+> **First-time setup downloads ~6.5GB of AI models and needs internet ONCE.
+> After setup, AEGIS runs 100% offline — no internet, ever.**
+>
+> You can disconnect the network permanently once `install` finishes and every
+> feature keeps working. The launcher actively *refuses to start* if any
+> configured endpoint points off-machine.
 
 ---
 
 ## Install
 
+### 🐧 Linux / 🍎 macOS
+
 ```bash
 unzip aegis.zip && cd aegis
 chmod +x install.sh run.sh
-./install.sh      # one-time, pulls models, sets up everything
-./run.sh          # starts the app — works offline from here on
+./install.sh
+./run.sh
 ```
 
-Then open **http://127.0.0.1:8501**.
+### 🪟 Windows (PowerShell)
 
-![AEGIS console](screenshots/aegis-ui.png)
+```powershell
+Expand-Archive aegis.zip -DestinationPath .
+cd aegis
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+powershell -ExecutionPolicy Bypass -File .\run.ps1
+```
+
+> If PowerShell blocks the scripts, the `-ExecutionPolicy Bypass` prefix above
+> is what allows them to run for that one command without changing any
+> machine-wide setting. Once allowed, `.\install.ps1` and `.\run.ps1` work directly.
+
+Then open **http://127.0.0.1:8501** (the launcher opens it for you).
+
+Prefer `make`? On Linux/macOS: `make install`, `make run`, `make test`,
+`make index`, `make clean`, `make reset-chats` (`make help` lists them).
 
 ### What each command actually does
 
 | Command | In plain English |
 |---|---|
-| `chmod +x install.sh run.sh` | Marks the two scripts as runnable. Zip files don't preserve the executable bit, so this is needed once. |
-| `./install.sh` | Installs Ollama if you don't have it, starts it, downloads the three AI models, creates an isolated Python environment, installs the Python libraries, creates the local storage folders, reads your documents in `docs/` into a searchable index, and runs the test suite to prove it all works. Safe to re-run — anything already done is skipped. |
-| `./run.sh` | Starts everything up: activates the Python environment, makes sure Ollama is running, **verifies nothing can reach the internet**, builds the index if it's missing, and opens the console on `127.0.0.1:8501`. |
-
-Prefer `make`? `make install`, `make run`, `make test`, `make index`,
-`make clean`, `make reset-chats` do the same things (`make help` lists them).
+| `chmod +x install.sh run.sh` | Marks the two scripts as runnable. Zip files don't preserve the executable bit, so this is needed once. (Not needed on Windows.) |
+| `install.sh` / `install.ps1` | Detects your OS, installs Ollama if you don't have it, starts it, downloads the three AI models, creates an isolated Python environment, installs the Python libraries, creates the local storage folders, copies `.env.example` to `.env`, reads your documents in `docs/` into a searchable index, and runs the test suite to prove it all works. **Safe to re-run** — anything already done is skipped, so a failed download resumes instead of restarting. |
+| `run.sh` / `run.ps1` | Starts the app: activates the Python environment, makes sure Ollama is running, **verifies nothing can reach the internet and refuses to start if it can**, builds the index if missing, opens your browser, and serves the console on `127.0.0.1:8501`. |
 
 ---
 
@@ -74,16 +94,17 @@ Prefer `make`? `make install`, `make run`, `make test`, `make index`,
 2. **Ask a question.** Type it, or click one of the three example buttons —
    e.g. *"Pressure reading is 18.4 bar. Safe limit is 15 bar per SOP-402. Is
    this a violation?"* Optionally attach a gauge or equipment photo.
-3. **Watch the pipeline run.** Each of the steps — Plan, Vision, RAG, Calc,
-   Safety Check, Reflect, Answer — flips from ⏳ to ✅ with its real elapsed time.
+3. **Watch the pipeline run.** Each step — Plan, Vision, RAG, Calc, Safety
+   Check, Reflect, Answer — flips from ⏳ to ✅ with its real elapsed time.
 4. **Read the audited report.** You get the answer, the deterministic safety
    verdict, the retrieved SOP passages it used, the full reasoning trace, a
    network audit proving nothing left the machine, and the audit hash chain.
 5. **Sign off if required.** Anything safety-critical is blocked behind a named
    supervisor sign-off, which is itself written to the audit log.
-6. **Everything is saved.** Each run is appended to the current chat in
-   `data/chats/`. Use the sidebar to search past chats, reopen one (it restores
-   the full report), start a new one, or delete one.
+6. **Everything is saved automatically.** Each run is appended to the current
+   chat in `data/chats/`. The sidebar shows every past conversation with a
+   🟢 SAFE / 🟠 WARNING / 🔴 CRITICAL badge — search them, reopen one (the full
+   report restores), export it to Markdown, or delete it.
 
 There's also a **Document Comparison** tab: upload an old and a new revision of
 an SOP and AEGIS diffs them, flags changed pressure/temperature/shutdown/SIL
@@ -91,21 +112,38 @@ values as HIGH or MEDIUM risk, and writes an MOC-style impact summary.
 
 ---
 
-## Where your data is stored
+## Where your data lives
 
-Everything is a plain file under the project folder. Nothing leaves it.
+Everything is a plain file inside the project folder. Nothing leaves it.
 
 | Path | Contents |
 |---|---|
-| `data/chats/` | Chat history — one JSON file per session, human-readable |
+| `data/chats/` | Chat history — one human-readable JSON file per session |
+| `data/chats/index.json` | Fast lookup index (derived — safe to delete, rebuilds itself) |
+| `data/chats/media/` | Images you attached, copied in so history stays self-contained |
+| `data/chats/exports/` | Markdown exports you generate from the UI |
 | `data/embeddings/` | The FAISS vector index + BM25 index built from `docs/` |
 | `logs/audit.jsonl` | SHA-256 hash-chained audit trail of every step of every run |
-| `docs/` | Your source SOPs (the only folder you put things into) |
-| `temp/` | Scratch space |
+| `docs/` | Your source SOPs — the only folder you put things into |
 
-`data/`, `logs/` and `temp/` are gitignored — operator questions and plant
-readings never end up in version control. To wipe history: `make reset-chats`,
-or just delete the JSON files.
+`data/`, `logs/` and `temp/` are gitignored, so operator questions and plant
+readings never reach version control.
+
+---
+
+## Data & privacy
+
+- **No API keys. No cloud services. No accounts.** AEGIS talks to exactly one
+  thing: the Ollama daemon on `127.0.0.1:11434`. There is no code path that
+  requires a key from OpenAI, Anthropic, Google, HuggingFace or LangSmith.
+- **Telemetry is force-disabled in code**, in `core/__init__.py`, at package
+  import — before langchain/langsmith are loaded and can read those variables.
+  An edited `.env` or an inherited shell export cannot switch it back on.
+- **Your history is yours.** To read it: open any file in `data/chats/`. To
+  export one: the **📄 Export this session** button writes Markdown to
+  `data/chats/exports/`. To delete one: the 🗑 button in the sidebar. To wipe
+  everything: `make reset-chats`, or just delete the folder.
+- **Nothing is ever auto-deleted.** History is kept until you remove it.
 
 ---
 
@@ -114,67 +152,82 @@ or just delete the JSON files.
 AEGIS doesn't ask you to take its word for it.
 
 **In the app:** the sidebar shows a live `🔒 OFFLINE MODE — 0 external
-connections` badge, and every query's report includes a network audit of the
-sockets AEGIS's own process tree opened.
+connections` badge (it turns red if anything reaches out), and the **🔎 Privacy
+self-audit** button re-runs all four checks on demand and prints the raw socket
+list so you can see for yourself that only `127.0.0.1:11434` was contacted.
 
-**On startup:** `run.sh` runs four checks and refuses to launch if any fail —
-endpoints resolve to loopback, telemetry switches are off, no external sockets
-are open, and every network audit ever recorded was clean.
+**On startup:** `run.sh` / `run.ps1` runs four checks and **refuses to launch**
+if any fail — endpoints resolve to loopback, telemetry switches are off, no
+external sockets are open, and every network audit ever recorded was clean.
 
-**Prove it yourself** — pull the network cable (or `nmcli networking off`),
-then:
+**Prove it yourself** — disconnect the network (or `nmcli networking off`), then:
 
 ```bash
 ping -c1 8.8.8.8        # fails: no route to host
 ./run.sh                # starts anyway
 ```
 
-Ask a question. It answers normally. Run the check directly for the receipts:
+Ask a question. It answers normally — FAISS, `nomic-embed-text`, `moondream`
+and `qwen2.5:7b` all run locally against Ollama. For the receipts on the
+command line:
 
 ```bash
 ./venv/bin/python -m core.offline_check
 # offline_check ok — offline=True, external=[], network_audits_reviewed=N
 ```
 
-Telemetry is force-disabled in `core/__init__.py` at import time — before
-langchain or langsmith can read those variables — so an edited `.env` or an
-inherited shell export can't switch phone-home behaviour back on.
-`.streamlit/config.toml` disables Streamlit usage stats and binds the server to
-`127.0.0.1`, never `0.0.0.0`, so the console isn't reachable from the plant LAN.
+The **only** exception, stated plainly: the first-time model pull during
+install, which downloads the weights from `ollama.com`. Nothing else, ever.
 
 ---
 
 ## Troubleshooting
 
+### All platforms
+
 | Symptom | Fix |
 |---|---|
-| `Cannot reach Ollama at http://localhost:11434` | Start it: `ollama serve` (or `sudo systemctl start ollama`). `run.sh` tries this for you; check `logs/ollama.log`. |
+| `Cannot reach Ollama at …` | Start it: `ollama serve`. The launcher tries this for you first. |
+| Model download fails or stalls | Re-run the installer. Already-downloaded models are skipped, so it resumes rather than restarting the 6.5GB. |
+| A model is missing | AEGIS prints the exact command, e.g. `ollama pull qwen2.5:7b`. |
+| `offline verification failed — refusing to start` | `OLLAMA_HOST` in `.env` points off-machine. Set it to `http://localhost:11434`. |
+| `The search index … is unreadable or corrupted` | Rebuild it — the sidebar button, or `make index`. No source documents are lost. |
+| `No relevant documents found` | The index is empty. Put files in `docs/` and rebuild. |
+| Answers are slow (10–60s) | Expected on a 4GB GPU — `qwen2.5:7b` partly runs on CPU. See ARCHITECTURE.md. |
+| Docker warning at startup | Harmless. The calculator silently falls back to a restricted in-process evaluator. |
+
+### 🐧 Linux
+
+| Symptom | Fix |
+|---|---|
 | `Permission denied: ./install.sh` | `chmod +x install.sh run.sh` — the zip didn't preserve the executable bit. |
-| Model download fails or stalls | Re-run `./install.sh`. It skips models already downloaded, so it resumes rather than restarting the 6.5GB. |
-| `port 8501 is already in use` | Another copy is running. Stop it, or use a different port: `AEGIS_PORT=8502 ./run.sh`. |
-| `no virtual environment found` | You ran `./run.sh` before `./install.sh`. Run the installer first. |
-| `could not create the venv` (Ubuntu) | `sudo apt install python3-venv`, then re-run `./install.sh`. |
-| `offline verification failed — refusing to start` | `OLLAMA_HOST` in `.env` points off-machine. Set it back to `http://localhost:11434`. |
-| Answers are slow (20–60s) | Expected on a 4GB GPU — `qwen2.5:7b` partly runs on CPU. See ARCHITECTURE.md. |
-| `No relevant documents found` | The index is empty. Put files in `docs/` and run `make index`. |
-| Docker warning at startup | Harmless. The calculator falls back to a restricted in-process evaluator. Start Docker for full sandbox isolation. |
+| `could not create the venv` | Ubuntu/Debian: `sudo apt install python3-venv`. Arch: `sudo pacman -S python`. |
+| Ollama service won't start | `sudo systemctl start ollama`, or run `ollama serve` in its own terminal. |
+| `port 8501 is already in use` | `AEGIS_PORT=8502 ./run.sh`, or stop the other process. |
+| Activate venv manually | `source venv/bin/activate` |
+
+### 🍎 macOS
+
+| Symptom | Fix |
+|---|---|
+| Ollama not found and no Homebrew | Install from https://ollama.com/download, then re-run `./install.sh`. |
+| `brew services start ollama` fails | Just run `ollama serve` in a separate terminal. |
+| `"install.sh" cannot be opened because it is from an unidentified developer` | Run it from Terminal (`./install.sh`) rather than double-clicking. |
+| Apple Silicon (M1–M4) | Fully supported — Ollama ships native arm64 builds. |
+| Activate venv manually | `source venv/bin/activate` |
+
+### 🪟 Windows
+
+| Symptom | Fix |
+|---|---|
+| `…install.ps1 cannot be loaded because running scripts is disabled` | Use `powershell -ExecutionPolicy Bypass -File .\install.ps1`, or run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once. |
+| `ollama: command not found` right after installing it | Close PowerShell, open a **new** window (so PATH refreshes), re-run `.\install.ps1`. |
+| Python opens the Microsoft Store | The Store stub is on PATH. Install real Python: `winget install Python.Python.3.12`, tick *Add python.exe to PATH*, open a new window. |
+| `port 8501 is already in use` | `.\run.ps1 -Port 8502`, or stop the other process. |
+| Activate venv manually | `.\venv\Scripts\Activate.ps1` |
+| Windows Defender/firewall prompt | Allow it on **Private** networks only. AEGIS binds loopback and does not need any network permission to function. |
 
 ---
-
-## Features
-
-- ✅ **One-command install** — `./install.sh` handles Ollama, models, venv, deps, folders, index and verification; idempotent and re-runnable
-- ✅ **LangGraph 6-node agent loop** (Plan → Vision → RAG → Calc → Safety Check → Reflect → Answer) with a bounded reflect→RAG retry
-- ✅ **Hybrid FAISS + BM25 retrieval** with reciprocal rank fusion over your local SOPs
-- ✅ **Local vision** on gauge/equipment photos via `moondream`
-- ✅ **Sandboxed calculator** — Docker `network=none`, capabilities dropped, with an AST-whitelist fallback
-- ✅ **Deterministic safety checks** (no LLM in the decision path) for pressure, temperature, vibration and wall thickness
-- ✅ **Three independent gates** on human sign-off (reflect judgment, keyword backstop, rule-engine verdict)
-- ✅ **SHA-256 hash-chained audit log** — tamper-evident, `verify()` finds the first broken link
-- ✅ **Per-query network audit** proving zero external connections
-- ✅ **Local chat history** — searchable, reloadable, one JSON file per session in `data/chats/`
-- ✅ **Document revision diffing** with risk-rated safety-critical change flagging and MOC impact summary
-- ✅ **Offline enforcement** — four startup checks, forced telemetry kill, loopback-only binding
 
 ## Architecture
 
@@ -186,8 +239,8 @@ Plan → Vision (if image attached) → RAG → Calc → Safety Check → Reflec
 
 Every node logs to `logs/audit.jsonl` (SHA-256 hash-chained — `audit.verify()`
 finds the first broken link if any past entry is edited). Every run also
-performs a network audit over its own process tree. See **ARCHITECTURE.md** for
-the full technical detail.
+performs a network audit over its own process tree, and auto-saves to
+`data/chats/`. See **ARCHITECTURE.md** for the full technical detail.
 
 **Safety check is deterministic, not an LLM judgment.** The planner LLM only
 extracts which check applies and the numbers involved (grounded in the query
@@ -199,32 +252,33 @@ CRITICAL/EXCEEDS/BELOW_MINIMUM verdict.
 ## Project layout
 
 ```
-install.sh               — one-time setup (the only step needing internet)
-run.sh                   — start the app (fully offline, verifies it before launching)
-Makefile                 — install / run / test / index / clean / reset-chats
-.streamlit/config.toml   — telemetry off, loopback-only binding, dark theme
-core/agent.py            — LangGraph state machine (plan/vision/rag/calc/safety_check/reflect/answer)
-core/rag.py              — hybrid FAISS + BM25 retrieval over docs/
-core/tools.py            — vision (moondream), sandboxed calc, RAG search
-core/audit.py            — SHA-256 hash-chained JSONL audit log
-core/safety_rules.py     — deterministic pressure/temperature/vibration/wall-thickness checks
-core/doc_diff.py         — SOP/P&ID revision diffing + risk-rated safety flagging + MOC summary
-core/history.py          — local chat persistence (data/chats/)
-core/offline_check.py    — four-way offline verification (endpoints/telemetry/live/history)
-core/network_monitor.py  — per-query air-gap audit (external connections, byte counts)
-ui/app.py                — Streamlit console: history sidebar, live pipeline, sign-off, doc compare
-config/                  — safety_limits.example.json: template for your own verified thresholds
-docs/                    — SOPs to index (PDF/TXT/MD)
-test_aegis.py            — end-to-end smoke test
+install.sh / install.ps1  — one-time setup (the only step needing internet)
+run.sh     / run.ps1      — start the app (fully offline; verifies before launching)
+Makefile                  — install / run / test / index / clean / reset-chats
+.streamlit/config.toml    — telemetry off, loopback-only binding, CORS+XSRF on
+core/agent.py             — LangGraph state machine + friendly_error() translator
+core/rag.py               — hybrid FAISS + BM25 retrieval over docs/
+core/tools.py             — vision (moondream), sandboxed calc, RAG search
+core/audit.py             — SHA-256 hash-chained JSONL audit log
+core/safety_rules.py      — deterministic pressure/temperature/vibration/thickness checks
+core/doc_diff.py          — SOP/P&ID revision diffing + risk-rated safety flagging
+core/history.py           — local chat persistence (data/chats/), atomic writes
+core/offline_check.py     — four-way offline verification + assert_offline()
+core/network_monitor.py   — per-query air-gap audit
+ui/app.py                 — Streamlit console: history, live pipeline, sign-off, privacy audit
+config/                   — safety_limits.example.json: template for your verified thresholds
+docs/                     — SOPs to index (PDF/TXT/MD)
+test_aegis.py             — end-to-end smoke test
 ```
 
 ## Environment variables
 
-Copy `.env.example` to `.env` to override any of these. All have working defaults.
+`install` copies `.env.example` to `.env` for you. All values have working
+defaults, and **none of them is a key or a credential.**
 
 | Var | Default | Purpose |
 |---|---|---|
-| `OLLAMA_HOST` | `http://localhost:11434` | local Ollama server — must stay loopback or `run.sh` refuses to start |
+| `OLLAMA_HOST` | `http://localhost:11434` | local Ollama server — must stay loopback or the launcher refuses to start |
 | `LLM_MODEL` | `qwen2.5:7b` | reasoning model |
 | `VISION_MODEL` | `moondream` | image description model |
 | `EMBED_MODEL` | `nomic-embed-text` | embedding model for RAG |
@@ -235,13 +289,50 @@ Copy `.env.example` to `.env` to override any of these. All have working default
 | `AUDIT_LOG` | `logs/audit.jsonl` | hash-chained audit log path |
 | `SANDBOX_IMAGE` | `python:3.12-slim` | Docker image for the sandboxed calc tool |
 | `SANDBOX_TIMEOUT` | `10` | seconds before the sandbox run is killed |
-| `SAFETY_LIMITS_FILE` | `config/safety_limits.json` | operator-supplied reference limits — copy from `config/safety_limits.example.json` and fill in numbers verified from your own SOPs; never pre-populated by AEGIS |
-| `AEGIS_PORT` | `8501` | port for `./run.sh` |
+| `SAFETY_LIMITS_FILE` | `config/safety_limits.json` | your own verified thresholds — copy from the example; never pre-populated by AEGIS |
+| `AEGIS_PORT` | `8501` | port for the launcher |
 
-Telemetry switches (`LANGCHAIN_TRACING_V2`, `LANGSMITH_TRACING`,
-`ANONYMIZED_TELEMETRY`, `SCARF_NO_ANALYTICS`, `DO_NOT_TRACK`,
+Telemetry switches (`LANGCHAIN_TRACING_V2`, `LANGCHAIN_ENDPOINT`,
+`LANGSMITH_TRACING`, `ANONYMIZED_TELEMETRY`, `HF_HUB_OFFLINE`,
+`TRANSFORMERS_OFFLINE`, `SCARF_NO_ANALYTICS`, `DO_NOT_TRACK`,
 `STREAMLIT_BROWSER_GATHER_USAGE_STATS`) are **force-set to disabled** by
 `core/__init__.py` at import time and cannot be re-enabled via `.env`.
+
+## FAQ
+
+**Does it need internet?**
+Once, during install, to download ~6.5GB of model weights. After that, never.
+You can physically disconnect the machine and every feature keeps working.
+
+**Where is my data?**
+All of it is in the project folder: `data/chats/` (conversations),
+`data/embeddings/` (search index), `logs/audit.jsonl` (audit trail). Plain
+files you can read, copy, export or delete. Nothing is uploaded anywhere.
+
+**Do I need an API key?**
+No. AEGIS has no cloud dependency of any kind — that's the entire point. All
+three models run locally through Ollama.
+
+**Can I use bigger models?**
+Yes. Pull one (`ollama pull qwen2.5:14b`) and set `LLM_MODEL=qwen2.5:14b` in
+`.env`. Same for `VISION_MODEL` and `EMBED_MODEL` — change `EMBED_MODEL` and
+you must rebuild the index (`make index`), since old vectors aren't comparable
+to new ones. Bigger models need proportionally more VRAM/RAM.
+
+**How do I add my own SOPs?**
+Copy `.pdf`, `.txt` or `.md` files into `docs/`, then click **Rebuild index
+from docs/** in the sidebar (or run `make index`). They're indexed locally with
+`nomic-embed-text`; the documents never leave the machine.
+
+**Can others on my network reach it?**
+No. The server binds `127.0.0.1` only, never `0.0.0.0`, so it isn't reachable
+from the plant LAN. CORS and XSRF protection are on, so a malicious page in
+your own browser can't reach it over localhost either.
+
+**Is the audit log tamper-proof?**
+Tamper-*evident*. Editing any past entry breaks every hash after it and
+`audit.verify()` reports the first broken link. It cannot prove entries were
+never truncated and re-chained — that needs an external anchor.
 
 ## Honest architecture table — pitch deck vs. this prototype
 
@@ -263,7 +354,8 @@ Telemetry switches (`LANGCHAIN_TRACING_V2`, `LANGSMITH_TRACING`,
 - Single-user, single-process — no RBAC/multi-tenant plant-DMZ deployment yet.
 - `safety_rules.py`'s vibration/wall-thickness checkers are generic threshold evaluators, not preloaded with ISO 10816-3 (or any other) table values — limits must come from the query, retrieved SOP text, or your own `config/safety_limits.json`, so the system never asserts an unverified regulatory number as fact.
 - `core/doc_diff.py` splits documents into sections on blank lines and pairs revisions by text similarity (stdlib `difflib`); its safety-critical flagging is a keyword heuristic that deliberately over-flags. Works well on prose-style SOPs, untested on structured P&ID exports.
-- The audit log is tamper-*evident*, not tamper-proof: hash-chaining catches edits to entries that remain, but can't prove entries were never truncated and re-chained. That needs an external anchor.
+- The audit log is tamper-*evident*, not tamper-proof (see FAQ).
+- The Windows installers (`install.ps1`, `run.ps1`) were written against the documented PowerShell/winget/Ollama behaviour and reviewed line by line, but this repo's testing ran on Arch Linux — they have not been executed end-to-end on a Windows machine.
 
 ## License
 
