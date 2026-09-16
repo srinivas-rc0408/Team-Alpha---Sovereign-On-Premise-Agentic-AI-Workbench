@@ -90,6 +90,7 @@ _Screenshot: see `screenshots/` (placeholder — add one from your run)._
 | `AUDIT_LOG` | `logs/audit.jsonl` | hash-chained audit log path |
 | `SANDBOX_IMAGE` | `python:3.12-slim` | Docker image for the sandboxed calc tool |
 | `SANDBOX_TIMEOUT` | `10` | seconds before the sandbox run is killed |
+| `SAFETY_LIMITS_FILE` | `config/safety_limits.json` | operator-supplied reference limits — copy from `config/safety_limits.example.json` and fill in numbers verified from your own SOPs/standards; never pre-populated by AEGIS itself |
 
 ## Project layout
 
@@ -100,7 +101,10 @@ core/tools.py            — vision (moondream), sandboxed calc, RAG search
 core/audit.py            — SHA-256 hash-chained JSONL audit log
 core/safety_rules.py     — deterministic pressure/temperature/vibration/wall-thickness checks, no LLM
 core/network_monitor.py  — per-query air-gap audit (external connections, byte counts)
-ui/app.py                — Streamlit demo, sign-off gate, audit/sandbox/network status
+core/differ.py           — SOP/P&ID revision diffing + LLM-written, diff-grounded MOC impact summary
+ui/app.py                — Streamlit demo: example queries, live per-step pipeline, sign-off gate,
+                           audit/sandbox/network status, document comparison tab
+config/                  — safety_limits.example.json: template for your own verified thresholds
 docs/                    — SOPs to index (PDF/TXT/MD)
 test_aegis.py            — end-to-end smoke test
 ```
@@ -110,6 +114,5 @@ test_aegis.py            — end-to-end smoke test
 - No LanceDB, FastAPI/Redis, Next.js/React Flow, or gVisor — see the table above for what stands in for each and why.
 - Vision returns a text description, not structured defect bounding boxes (needs Qwen2.5-VL; only moondream is installed here).
 - Single-user, single-process — no RBAC/multi-tenant plant-DMZ deployment yet.
-- No document-diff/MOC-review tool between SOP revisions — not built.
-- The Streamlit UI is functional but plain: no example-query buttons, live per-step pipeline animation, or dark-blue branding pass — not built.
-- `safety_rules.py`'s vibration/wall-thickness checkers are generic threshold evaluators, not preloaded with ISO 10816-3 (or any other) table values — the limits must come from the query or retrieved SOP text, so the system never asserts an unverified regulatory number as fact.
+- `safety_rules.py`'s vibration/wall-thickness checkers are generic threshold evaluators, not preloaded with ISO 10816-3 (or any other) table values — the limits must come from the query, retrieved SOP text, or your own `config/safety_limits.json`, so the system never asserts an unverified regulatory number as fact.
+- `core/differ.py` splits documents into sections on blank lines and pairs revisions by text similarity (stdlib `difflib`) — works well on the prose-style SOPs here, untested on structured P&ID exports.

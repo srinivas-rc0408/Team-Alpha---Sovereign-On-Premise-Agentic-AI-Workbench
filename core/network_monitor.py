@@ -30,15 +30,20 @@ def _is_external(raddr) -> bool:
     return bool(raddr) and raddr.ip not in ("127.0.0.1", "::1")
 
 
-def audit(fn, *args, **kwargs):
-    """Run fn(*args, **kwargs), returning (result, network_report)."""
-    io_before = psutil.net_io_counters()
-    result = fn(*args, **kwargs)
-    io_after = psutil.net_io_counters()
+def snapshot_io():
+    """Call before the work you want to measure; pass the result to report()."""
+    return psutil.net_io_counters()
 
+
+def report(io_before) -> dict:
+    """Call after the work completes. Split from audit() so a caller that needs
+    to interleave (e.g. streaming step-by-step UI progress) can snapshot once,
+    do its own work loop, then report once at the end — same measurement,
+    without forcing the work to run inside a single blocking call."""
+    io_after = psutil.net_io_counters()
     conns = _own_connections()
     external = [c for c in conns if _is_external(c.raddr)]
-    report = {
+    return {
         "system_wide_bytes_sent": io_after.bytes_sent - io_before.bytes_sent,
         "system_wide_bytes_recv": io_after.bytes_recv - io_before.bytes_recv,
         "connections": [
@@ -51,7 +56,13 @@ def audit(fn, *args, **kwargs):
         ],
         "clean": len(external) == 0,
     }
-    return result, report
+
+
+def audit(fn, *args, **kwargs):
+    """Run fn(*args, **kwargs), returning (result, network_report)."""
+    io_before = snapshot_io()
+    result = fn(*args, **kwargs)
+    return result, report(io_before)
 
 
 if __name__ == "__main__":  # ponytail: self-check — a call with no I/O reports clean

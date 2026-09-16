@@ -48,6 +48,15 @@ def log(event: str, data: dict, path: str = None) -> dict:
     return entry
 
 
+def read(path: str = None) -> list[dict]:
+    """Return parsed log entries in order, hash and prev_hash intact, for display."""
+    path = _path(path)
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
 def verify(path: str = None) -> tuple[bool, int]:
     """Return (ok, entries_checked). ok is False if the chain was tampered with."""
     path = _path(path)
@@ -77,6 +86,7 @@ if __name__ == "__main__":  # ponytail: chain self-check — proves tampering is
     log("b", {"x": 2}, p)
     log("c", {"x": 3}, p)
     assert verify(p) == (True, 3)
+    assert [e["event"] for e in read(p)] == ["a", "b", "c"]
 
     lines = open(p).read().splitlines()
     e = json.loads(lines[1])

@@ -4,3 +4,4 @@ __pycache__/
 data/embeddings/
 logs/*.jsonl
 .env
+.playwright-mcp/
